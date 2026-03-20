@@ -1546,7 +1546,10 @@ async function fetchCatastroBuildings(south,west,north,east){
     progressBar.style.width='45%';
     statusEl.textContent='Recibiendo GML del Catastro…';
 
-    var gmlText=await resp.text();
+    // El Catastro devuelve ISO-8859-1 — hay que decodificar explícitamente
+    // (resp.text() usa UTF-8 por defecto y corrompe el XML)
+    var rawBuf=await resp.arrayBuffer();
+    var gmlText=new TextDecoder('iso-8859-1').decode(rawBuf);
     if(osmAborted)return;
 
     // Detectar error WFS (ExceptionReport)
@@ -1692,23 +1695,29 @@ function parseCatastroGML(gmlText,utmZone){
 }
 
 // Extrae anillos exteriores de todos los gml:Polygon dentro de un elemento
+// Extrae anillos exteriores — soporta Polygon directo y MultiSurface
 function _extractGMLPolygons(el,utmZone){
   var rings=[];
+
+  // Recoger todos los gml:Polygon dentro del elemento
+  // (pueden estar dentro de gml:MultiSurface/gml:surfaceMember/...)
   var polys=el.getElementsByTagNameNS('*','Polygon');
   for(var p=0;p<polys.length;p++){
     var extEl=polys[p].getElementsByTagNameNS('*','exterior');
     if(!extEl.length)continue;
-    var plEl=extEl[0].getElementsByTagNameNS('*','posList');
-    if(!plEl.length){
-      var coordEl=extEl[0].getElementsByTagNameNS('*','coordinates');
+    var lr=extEl[0].getElementsByTagNameNS('*','LinearRing');
+    var targetEl=lr.length?lr[0]:extEl[0];
+    var plEl=targetEl.getElementsByTagNameNS('*','posList');
+    if(plEl.length){
+      var ring=_gmlPosListToRing(plEl[0].textContent,utmZone);
+      if(ring&&ring.length>=4){rings.push(ring);if(rings.length)break;}
+    } else {
+      var coordEl=targetEl.getElementsByTagNameNS('*','coordinates');
       if(coordEl.length){
         var ring=_gmlCoordsToRing(coordEl[0].textContent,utmZone);
-        if(ring&&ring.length>=4){rings.push(ring);break;}
+        if(ring&&ring.length>=4){rings.push(ring);if(rings.length)break;}
       }
-      continue;
     }
-    var ring=_gmlPosListToRing(plEl[0].textContent,utmZone);
-    if(ring&&ring.length>=4){rings.push(ring);break;}
   }
   return rings;
 }
