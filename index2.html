@@ -1461,31 +1461,70 @@ function osmFinishDraw(clientX,clientY){
 }
 
 // ── Overpass API query + GPKG generation ──────────────────────────────────────
+var OVERPASS_MIRRORS=[
+  'https://overpass-api.de/api/interpreter',
+  'https://overpass.kumi.systems/api/interpreter',
+  'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
+  'https://overpass.openstreetmap.ru/api/interpreter'
+];
+
+async function overpassFetch(query,statusEl,progressBar){
+  var errors=[];
+  for(var mi=0;mi<OVERPASS_MIRRORS.length;mi++){
+    if(osmAborted)return null;
+    var mirror=OVERPASS_MIRRORS[mi];
+    var mirrorName=mirror.replace('https://','').split('/')[0];
+    statusEl.textContent='Consultando '+mirrorName+'…  (servidor '+(mi+1)+'/'+OVERPASS_MIRRORS.length+')';
+    progressBar.style.width=(10+mi*18)+'%';
+    try{
+      var ctrl=new AbortController();
+      var timer=setTimeout(function(){ctrl.abort();},35000);
+      var resp=await fetch(mirror,{
+        method:'POST',
+        headers:{'Content-Type':'application/x-www-form-urlencoded'},
+        body:'data='+encodeURIComponent(query),
+        signal:ctrl.signal
+      });
+      clearTimeout(timer);
+      if(osmAborted)return null;
+      if(resp.status===429||resp.status===504||resp.status===503){
+        errors.push(mirrorName+': HTTP '+resp.status);
+        // pequeña espera antes de probar el siguiente mirror
+        await new Promise(function(r){setTimeout(r,800);});
+        continue;
+      }
+      if(!resp.ok)throw new Error(mirrorName+': HTTP '+resp.status);
+      return resp;
+    }catch(e){
+      if(osmAborted)return null;
+      if(e.name==='AbortError'){errors.push(mirrorName+': timeout');}
+      else{errors.push(mirrorName+': '+e.message);}
+      await new Promise(function(r){setTimeout(r,600);});
+    }
+  }
+  throw new Error('Todos los servidores Overpass fallaron:\n'+errors.join('\n'));
+}
+
 async function fetchOSMBuildings(south,west,north,east){
   osmAborted=false;
   var modal=document.getElementById('osm-modal');
   var statusEl=document.getElementById('osm-status-text');
   var progressBar=document.getElementById('osm-progress-bar');
   var abortBtn=document.getElementById('osm-abort-btn');
-  progressBar.style.width='10%';
+  progressBar.style.width='5%';
   progressBar.style.background='#4a90ff';
   abortBtn.textContent='Cancelar'; abortBtn.disabled=false;
   abortBtn.onclick=osmAbort;
-  statusEl.textContent='Consultando Overpass API…';
+  statusEl.textContent='Iniciando consulta…';
   modal.classList.add('open');
 
   var bbox=south+','+west+','+north+','+east;
   var query='[out:json][timeout:30];(way[building][height]('+bbox+');way[building]["building:levels"]('+bbox+'););out geom;';
 
   try{
-    var resp=await fetch('https://overpass-api.de/api/interpreter',{
-      method:'POST',
-      headers:{'Content-Type':'application/x-www-form-urlencoded'},
-      body:'data='+encodeURIComponent(query)
-    });
-    if(osmAborted)return;
-    if(!resp.ok)throw new Error('Overpass HTTP '+resp.status+' — el servidor puede estar sobrecargado, inténtalo de nuevo.');
-    progressBar.style.width='45%';
+    var resp=await overpassFetch(query,statusEl,progressBar);
+    if(!resp||osmAborted)return;
+    progressBar.style.width='60%';
     statusEl.textContent='Procesando respuesta OSM…';
     var data=await resp.json();
     if(osmAborted)return;
