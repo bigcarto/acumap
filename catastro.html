@@ -1561,15 +1561,30 @@ async function fetchCatastroBuildings(south,west,north,east){
     await new Promise(function(r){setTimeout(r,20);});
     if(osmAborted)return;
 
+    // Log completo a consola para diagnóstico
+    console.log('[Catastro WFS] URL:', url);
+    console.log('[Catastro WFS] HTTP status:', resp.status);
+    console.log('[Catastro WFS] GML length:', gmlText.length);
+    console.log('[Catastro WFS] GML raw:', gmlText);
+
     var features=parseCatastroGML(gmlText,utmZoneReq);
+    console.log('[Catastro WFS] Features parsed:', features.length);
     if(osmAborted)return;
 
     if(!features.length){
-      // Mostrar los primeros 800 chars del GML para diagnóstico
-      var preview=gmlText.replace(/>\s+</g,'><').substring(0,900);
-      _osmShowResult('warning',
-        'El servidor respondió pero no se encontraron edificios parseables.\n\n'
-        +'Respuesta GML (primeros 900 chars):\n'+preview);
+      // Mostrar el GML completo en un textarea scrollable para diagnóstico
+      var statusEl2=document.getElementById('osm-status-text');
+      var progressBar2=document.getElementById('osm-progress-bar');
+      var abortBtn2=document.getElementById('osm-abort-btn');
+      progressBar2.style.width='100%';
+      progressBar2.style.background='#ffc547';
+      statusEl2.innerHTML=
+        '<div style="margin-bottom:6px;font-weight:600;color:#ffc547">⚠ Parser no encontró geometrías. GML recibido ('+gmlText.length+' chars):</div>'
+        +'<textarea id="gml-debug" style="width:100%;height:160px;background:#0d0f14;border:1px solid #252a38;color:#c8d0dc;font-family:monospace;font-size:9px;padding:6px;border-radius:4px;resize:vertical" readonly></textarea>'
+        +'<div style="margin-top:6px;font-size:10px;color:#c8d0dc">Revisa también la Consola del navegador (F12) para el GML completo.</div>';
+      document.getElementById('gml-debug').value=gmlText;
+      abortBtn2.textContent='Cerrar'; abortBtn2.disabled=false;
+      abortBtn2.onclick=function(){osmCloseModal();abortBtn2.onclick=osmAbort;abortBtn2.textContent='Cancelar';};
       return;
     }
 
