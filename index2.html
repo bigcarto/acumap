@@ -758,11 +758,11 @@ function parseGPKG(db,tableName,geomCol,srsId,heightCol){
   });
 
   db.close();
+  buildingsActive=true;
+  document.getElementById('bld-toggle-btn').classList.add('active');
   renderBuildings();
   calculate(); drawIsophones();
   btn.classList.remove('loading'); btn.classList.add('active'); btn.innerHTML=_bldIcon();
-  buildingsActive=true;
-  document.getElementById('bld-toggle-btn').classList.add('active');
   var msg='🏢 '+buildings.length+' edificios'+(skipped?' ('+skipped+' omitidos)':'')
          +' · campo "'+heightCol+'"'+(utmZone?' · UTM Z'+utmZone:'');
   showBadge('bld-badge',msg);
@@ -780,7 +780,9 @@ function parseGPKGGeom(bytes){
   var envLen=[0,32,48,48,64][envInd]||0;
   var wkbOff=8+envLen;
   if(wkbOff>=bytes.length)return null;
-  var view=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength);
+  // Copia segura: garantiza byteOffset=0 independientemente de cómo devuelva sql.js el BLOB
+  var cleanBuf=bytes.buffer.slice(bytes.byteOffset,bytes.byteOffset+bytes.byteLength);
+  var view=new DataView(cleanBuf);
   return parseWKBGeom(view,wkbOff).rings;
 }
 
