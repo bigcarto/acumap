@@ -1521,7 +1521,13 @@ async function fetchOSMBuildings(south,west,north,east){
   modal.classList.add('open');
 
   var bbox=south+','+west+','+north+','+east;
-  var query='[out:json][timeout:30];(way[building][height]('+bbox+');way[building]["building:levels"]('+bbox+'););out geom;';
+  // ways + multipolygon relations, ambos con height o building:levels
+  var query='[out:json][timeout:30];('
+    +'way[building][height]('+bbox+');'
+    +'way[building]["building:levels"]('+bbox+');'
+    +'relation[building][height]('+bbox+');'
+    +'relation[building]["building:levels"]('+bbox+');'
+    +');out geom;';
 
   try{
     var resp=await overpassFetch(query,statusEl,progressBar);
@@ -1541,17 +1547,32 @@ async function fetchOSMBuildings(south,west,north,east){
 
     var features=[];
     data.elements.forEach(function(el){
-      if(el.type!=='way'||!el.geometry||el.geometry.length<3)return;
       var tags=el.tags||{};
       var h=0;
       if(tags.height)h=parseOsmHeight(tags.height);
       if(h<=0&&tags['building:levels'])h=(parseInt(tags['building:levels'])||0)*3.0;
       if(h<=0)return;
-      var ring=el.geometry.map(function(pt){return[pt.lon,pt.lat];});
-      var first=ring[0],last=ring[ring.length-1];
-      if(first[0]!==last[0]||first[1]!==last[1])ring.push([first[0],first[1]]);
-      if(ring.length<4)return;
-      features.push({osm_id:String(el.id),building:tags.building||'yes',name:tags.name||'',levels:parseInt(tags['building:levels'])||0,height:h,ring:ring});
+
+      if(el.type==='way'){
+        // Polígono simple
+        if(!el.geometry||el.geometry.length<3)return;
+        var ring=el.geometry.map(function(pt){return[pt.lon,pt.lat];});
+        var first=ring[0],last=ring[ring.length-1];
+        if(first[0]!==last[0]||first[1]!==last[1])ring.push([first[0],first[1]]);
+        if(ring.length<4)return;
+        features.push({osm_id:String(el.id),building:tags.building||'yes',name:tags.name||'',levels:parseInt(tags['building:levels'])||0,height:h,ring:ring});
+
+      } else if(el.type==='relation'&&el.members){
+        // Multipolígono: extraer anillos outer de los members
+        el.members.forEach(function(mem){
+          if(mem.role!=='outer'||!mem.geometry||mem.geometry.length<3)return;
+          var ring=mem.geometry.map(function(pt){return[pt.lon,pt.lat];});
+          var first=ring[0],last=ring[ring.length-1];
+          if(first[0]!==last[0]||first[1]!==last[1])ring.push([first[0],first[1]]);
+          if(ring.length<4)return;
+          features.push({osm_id:'r'+String(el.id),building:tags.building||'yes',name:tags.name||'',levels:parseInt(tags['building:levels'])||0,height:h,ring:ring});
+        });
+      }
     });
 
     if(!features.length){
