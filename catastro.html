@@ -1564,30 +1564,12 @@ async function fetchCatastroBuildings(south,west,north,east){
     await new Promise(function(r){setTimeout(r,20);});
     if(osmAborted)return;
 
-    // Log completo a consola para diagnóstico
-    console.log('[Catastro WFS] URL:', url);
-    console.log('[Catastro WFS] HTTP status:', resp.status);
-    console.log('[Catastro WFS] GML length:', gmlText.length);
-    console.log('[Catastro WFS] GML raw:', gmlText);
-
     var features=parseCatastroGML(gmlText,utmZoneReq);
     console.log('[Catastro WFS] Features parsed:', features.length);
     if(osmAborted)return;
 
     if(!features.length){
-      // Mostrar el GML completo en un textarea scrollable para diagnóstico
-      var statusEl2=document.getElementById('osm-status-text');
-      var progressBar2=document.getElementById('osm-progress-bar');
-      var abortBtn2=document.getElementById('osm-abort-btn');
-      progressBar2.style.width='100%';
-      progressBar2.style.background='#ffc547';
-      statusEl2.innerHTML=
-        '<div style="margin-bottom:6px;font-weight:600;color:#ffc547">⚠ Parser no encontró geometrías. GML recibido ('+gmlText.length+' chars):</div>'
-        +'<textarea id="gml-debug" style="width:100%;height:160px;background:#0d0f14;border:1px solid #252a38;color:#c8d0dc;font-family:monospace;font-size:9px;padding:6px;border-radius:4px;resize:vertical" readonly></textarea>'
-        +'<div style="margin-top:6px;font-size:10px;color:#c8d0dc">Revisa también la Consola del navegador (F12) para el GML completo.</div>';
-      document.getElementById('gml-debug').value=gmlText;
-      abortBtn2.textContent='Cerrar'; abortBtn2.disabled=false;
-      abortBtn2.onclick=function(){osmCloseModal();abortBtn2.onclick=osmAbort;abortBtn2.textContent='Cancelar';};
+      _osmShowResult('warning','No se encontraron edificios en el área seleccionada.\n\nComprueba que el área cubre territorio español (excepto País Vasco y Navarra).');
       return;
     }
 
@@ -1695,27 +1677,30 @@ function parseCatastroGML(gmlText,utmZone){
 }
 
 // Extrae anillos exteriores de todos los gml:Polygon dentro de un elemento
-// Extrae anillos exteriores — soporta Polygon directo y MultiSurface
+// Extrae anillos exteriores — soporta Polygon, PolygonPatch y MultiSurface
 function _extractGMLPolygons(el,utmZone){
   var rings=[];
 
-  // Recoger todos los gml:Polygon dentro del elemento
-  // (pueden estar dentro de gml:MultiSurface/gml:surfaceMember/...)
-  var polys=el.getElementsByTagNameNS('*','Polygon');
-  for(var p=0;p<polys.length;p++){
-    var extEl=polys[p].getElementsByTagNameNS('*','exterior');
+  // El Catastro usa gml:PolygonPatch (dentro de gml:Surface/gml:patches),
+  // no gml:Polygon. Buscamos ambos.
+  var polys=Array.from(el.getElementsByTagNameNS('*','PolygonPatch'));
+  var polys2=Array.from(el.getElementsByTagNameNS('*','Polygon'));
+  var allPolys=polys.concat(polys2);
+
+  for(var p=0;p<allPolys.length;p++){
+    var extEl=allPolys[p].getElementsByTagNameNS('*','exterior');
     if(!extEl.length)continue;
     var lr=extEl[0].getElementsByTagNameNS('*','LinearRing');
     var targetEl=lr.length?lr[0]:extEl[0];
     var plEl=targetEl.getElementsByTagNameNS('*','posList');
     if(plEl.length){
       var ring=_gmlPosListToRing(plEl[0].textContent,utmZone);
-      if(ring&&ring.length>=4){rings.push(ring);if(rings.length)break;}
+      if(ring&&ring.length>=4){rings.push(ring);break;}
     } else {
       var coordEl=targetEl.getElementsByTagNameNS('*','coordinates');
       if(coordEl.length){
         var ring=_gmlCoordsToRing(coordEl[0].textContent,utmZone);
-        if(ring&&ring.length>=4){rings.push(ring);if(rings.length)break;}
+        if(ring&&ring.length>=4){rings.push(ring);break;}
       }
     }
   }
