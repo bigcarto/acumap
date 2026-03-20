@@ -752,7 +752,7 @@ function parseGPKG(db,tableName,geomCol,srsId,heightCol){
     if(!rings||!rings.length){skipped++;return;}
     rings.forEach(function(ring){
       if(ring.length<3){skipped++;return;}
-      var converted=utmZone?ring.map(function(pt){return utmToWgs84(pt[0],pt[1],utmZone);}):ring;
+      var converted=utmZone?ring.map(function(pt){return utmToWgs84(pt[0],pt[1],utmZone);}):ring.map(function(pt){return[pt[1],pt[0]];});
       buildings.push({poly:converted, height:Math.max(0,h)});
     });
   });
