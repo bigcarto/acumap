@@ -1455,8 +1455,13 @@ function osmFinishDraw(clientX,clientY){
   }
 
   var dLat=maxLat-minLat, dLng=maxLng-minLng;
-  if(dLat>0.1||dLng>0.1){
-    if(!confirm('El área seleccionada es grande ('+dLat.toFixed(3)+'° × '+dLng.toFixed(3)+'°) y puede contener miles de edificios.\n\n¿Continuar con la descarga?'))return;
+  // Estimación rápida del área en km² para advertencia previa
+  var estAreaKm2=dLat*111*dLng*111*Math.cos(((maxLat+minLat)/2)*Math.PI/180);
+  if(estAreaKm2>4.5){
+    if(!confirm('El área seleccionada supera los 4 km² (~'+estAreaKm2.toFixed(1)+' km²).\n\n'
+      +'El WFS del Catastro tiene un límite estricto de 4 km² por petición.\n'
+      +'Si continúas el servidor puede devolver error o datos incompletos.\n\n'
+      +'¿Continuar igualmente?'))return;
   }
 
   fetchCatastroBuildings(minLat,minLng,maxLat,maxLng);
@@ -1498,12 +1503,26 @@ async function fetchCatastroBuildings(south,west,north,east){
     var minY=Math.min.apply(null,corners.map(function(c){return c.y;}));
     var maxY=Math.max.apply(null,corners.map(function(c){return c.y;}));
 
+    // Límite oficial del servicio: 4 km² por petición
+    var areaKm2=(maxX-minX)*(maxY-minY)/1e6;
+    if(areaKm2>4.5){
+      _osmShowResult('error',
+        'El área seleccionada es demasiado grande ('+areaKm2.toFixed(1)+' km²).\n\n'
+        +'El WFS del Catastro tiene un límite de 4 km² por petición.\n'
+        +'Reduce el área de selección en el mapa y vuelve a intentarlo.');
+      return;
+    }
+
+    // Parámetros exactos según documentación oficial Catastro INSPIRE WFS:
+    // - typenames=BU.BUILDING  (punto, no dos puntos; mayúsculas)
+    // - srsname=EPSG::25830    (DOBLE dos puntos — notación URN del Catastro)
+    // - bbox=xmin,ymin,xmax,ymax  (sin CRS al final)
+    // - version=2  (no 2.0.0)
     var url='https://ovc.catastro.meh.es/INSPIRE/wfsBU.aspx'
-      +'?SERVICE=WFS&VERSION=2.0.0&REQUEST=GetFeature'
-      +'&TYPENAMES=BU:Building'
-      +'&COUNT=3000'
-      +'&SRSNAME=EPSG:'+epsgReq
-      +'&BBOX='+minX.toFixed(2)+','+minY.toFixed(2)+','+maxX.toFixed(2)+','+maxY.toFixed(2)+',EPSG:'+epsgReq;
+      +'?service=wfs&version=2&request=getfeature'
+      +'&typenames=BU.BUILDING'
+      +'&srsname=EPSG::'+epsgReq
+      +'&bbox='+minX.toFixed(2)+','+minY.toFixed(2)+','+maxX.toFixed(2)+','+maxY.toFixed(2);
 
     progressBar.style.width='15%';
     statusEl.textContent='Consultando WFS de Catastro INSPIRE…';
