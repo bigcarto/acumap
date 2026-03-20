@@ -1480,14 +1480,30 @@ async function fetchCatastroBuildings(south,west,north,east){
   try{
     if(!SQL)throw new Error('sql.js no está disponible todavía. Espera un momento y vuelve a intentarlo.');
 
-    // WFS 2.0 del Catastro — Feature Type BU:Building, coordenadas EPSG:4326
-    // COUNT máximo recomendado para no saturar el servicio
+    // WFS 2.0 del Catastro — Feature Type BU:Building
+    // El servicio requiere coordenadas UTM ETRS89; detectamos zona por longitud central
+    var centerLon=(west+east)/2;
+    var utmZoneReq=30;
+    var epsgReq=25830;
+    if(centerLon<-6){utmZoneReq=29;epsgReq=25829;}
+    else if(centerLon>6){utmZoneReq=31;epsgReq=25831;}
+
+    // Convertir las 4 esquinas del bbox a UTM y tomar envolvente
+    var corners=[
+      wgs84ToUtm(south,west,utmZoneReq),wgs84ToUtm(south,east,utmZoneReq),
+      wgs84ToUtm(north,west,utmZoneReq),wgs84ToUtm(north,east,utmZoneReq)
+    ];
+    var minX=Math.min.apply(null,corners.map(function(c){return c.x;}));
+    var maxX=Math.max.apply(null,corners.map(function(c){return c.x;}));
+    var minY=Math.min.apply(null,corners.map(function(c){return c.y;}));
+    var maxY=Math.max.apply(null,corners.map(function(c){return c.y;}));
+
     var url='https://ovc.catastro.meh.es/INSPIRE/wfsBU.aspx'
       +'?SERVICE=WFS&VERSION=2.0.0&REQUEST=GetFeature'
       +'&TYPENAMES=BU:Building'
       +'&COUNT=3000'
-      +'&SRSNAME=EPSG:4326'
-      +'&BBOX='+west+','+south+','+east+','+north+',EPSG:4326';
+      +'&SRSNAME=EPSG:'+epsgReq
+      +'&BBOX='+minX.toFixed(2)+','+minY.toFixed(2)+','+maxX.toFixed(2)+','+maxY.toFixed(2)+',EPSG:'+epsgReq;
 
     progressBar.style.width='15%';
     statusEl.textContent='Consultando WFS de Catastro INSPIRE…';
@@ -1526,7 +1542,7 @@ async function fetchCatastroBuildings(south,west,north,east){
     await new Promise(function(r){setTimeout(r,20);});
     if(osmAborted)return;
 
-    var features=parseCatastroGML(gmlText);
+    var features=parseCatastroGML(gmlText,utmZoneReq);
     if(osmAborted)return;
 
     if(!features.length){
@@ -1558,7 +1574,8 @@ async function fetchCatastroBuildings(south,west,north,east){
 }
 
 // ── Parser GML de edificios Catastro INSPIRE ─────────────────────────────────
-function parseCatastroGML(gmlText){
+function parseCatastroGML(gmlText,utmZone){
+  if(!utmZone)utmZone=30;
   var doc=new DOMParser().parseFromString(gmlText,'application/xml');
   var features=[];
   var buildingEls=doc.getElementsByTagNameNS('*','Building');
@@ -1593,7 +1610,7 @@ function parseCatastroGML(gmlText){
     }
 
     // Geometría — extrae polígonos del elemento (primer anillo exterior)
-    var rings=_extractGMLPolygons(bld);
+    var rings=_extractGMLPolygons(bld,utmZone);
     if(!rings.length)continue;
 
     features.push({ref:ref,floors:floors,height:height,use:use,defaultHeight:defaultHeight,ring:rings[0]});
@@ -1602,7 +1619,7 @@ function parseCatastroGML(gmlText){
 }
 
 // Extrae anillos exteriores de todos los gml:Polygon dentro de un elemento
-function _extractGMLPolygons(el){
+function _extractGMLPolygons(el,utmZone){
   var rings=[];
   var polys=el.getElementsByTagNameNS('*','Polygon');
   for(var p=0;p<polys.length;p++){
@@ -1610,32 +1627,30 @@ function _extractGMLPolygons(el){
     if(!extEl.length)continue;
     var plEl=extEl[0].getElementsByTagNameNS('*','posList');
     if(!plEl.length){
-      // Fallback: gml:pos / gml:coordinates
       var coordEl=extEl[0].getElementsByTagNameNS('*','coordinates');
       if(coordEl.length){
-        var ring=_gmlCoordsToRing(coordEl[0].textContent);
+        var ring=_gmlCoordsToRing(coordEl[0].textContent,utmZone);
         if(ring&&ring.length>=4){rings.push(ring);break;}
       }
       continue;
     }
-    var ring=_gmlPosListToRing(plEl[0].textContent);
-    if(ring&&ring.length>=4){rings.push(ring);break;} // solo anillo exterior del primer polígono
+    var ring=_gmlPosListToRing(plEl[0].textContent,utmZone);
+    if(ring&&ring.length>=4){rings.push(ring);break;}
   }
   return rings;
 }
 
 // Convierte gml:posList a array [[lon,lat], ...], detectando orden de ejes y CRS
-function _gmlPosListToRing(posStr){
+function _gmlPosListToRing(posStr,utmZone){
   var nums=posStr.trim().split(/\s+/).map(Number);
   if(nums.length<8)return null;
   var raw=[];
   for(var i=0;i+1<nums.length;i+=2)raw.push([nums[i],nums[i+1]]);
   if(!raw.length)return null;
-  return _normalizeCoords(raw);
+  return _normalizeCoords(raw,utmZone);
 }
 
-// Convierte gml:coordinates (formato "lon,lat lon,lat" o "lon,lat,z ...")
-function _gmlCoordsToRing(coordStr){
+function _gmlCoordsToRing(coordStr,utmZone){
   var raw=[];
   var pairs=coordStr.trim().split(/\s+/);
   for(var i=0;i<pairs.length;i++){
@@ -1643,21 +1658,52 @@ function _gmlCoordsToRing(coordStr){
     if(parts.length>=2&&!isNaN(parts[0])&&!isNaN(parts[1]))raw.push([parts[0],parts[1]]);
   }
   if(raw.length<4)return null;
-  return _normalizeCoords(raw);
+  return _normalizeCoords(raw,utmZone);
+}
+
+// Conversión WGS84/ETRS89 → UTM (Transverse Mercator directa)
+function wgs84ToUtm(lat,lon,zone){
+  var a=6378137.0,f=1/298.257223563;
+  var b=a*(1-f),e2=1-(b*b)/(a*a),ep2=e2/(1-e2),k0=0.9996;
+  var lon0=(zone*6-183)*Math.PI/180;
+  var latR=lat*Math.PI/180,lonR=lon*Math.PI/180;
+  var sinLat=Math.sin(latR),cosLat=Math.cos(latR),tanLat=Math.tan(latR);
+  var N=a/Math.sqrt(1-e2*sinLat*sinLat);
+  var T=tanLat*tanLat;
+  var C=ep2*cosLat*cosLat;
+  var A=cosLat*(lonR-lon0);
+  var M=a*((1-e2/4-3*e2*e2/64-5*e2*e2*e2/256)*latR
+    -(3*e2/8+3*e2*e2/32+45*e2*e2*e2/1024)*Math.sin(2*latR)
+    +(15*e2*e2/256+45*e2*e2*e2/1024)*Math.sin(4*latR)
+    -(35*e2*e2*e2/3072)*Math.sin(6*latR));
+  var x=k0*N*(A+(1-T+C)*A*A*A/6+(5-18*T+T*T+72*C-58*ep2)*A*A*A*A*A/120)+500000;
+  var y=k0*(M+N*tanLat*(A*A/2+(5-T+9*C+4*C*C)*A*A*A*A/24+(61-58*T+T*T+600*C-330*ep2)*A*A*A*A*A*A/720));
+  return{x:x,y:y};
 }
 
 // Detecta si las coordenadas son UTM o geográficas, y el orden de ejes,
 // y devuelve siempre [lon, lat] (para el GPKG en WGS84)
-function _normalizeCoords(raw){
+// utmZone: zona UTM esperada (29/30/31) para conversión correcta
+function _normalizeCoords(raw,utmZone){
+  if(!utmZone)utmZone=30;
   var x0=raw[0][0],y0=raw[0][1];
-  if(x0>10000){
-    // Coordenadas UTM (ETRS89)
-    // Estimación de zona: España peninsular mayoritariamente zona 30
-    var zone=30;
-    if(x0>700000)zone=31;        // Cataluña / Baleares
-    else if(x0<300000)zone=29;   // Galicia / Canarias zona 28 aprox.
+  if(x0>10000||y0>10000){
+    // Coordenadas UTM (ETRS89) — el GML Catastro puede devolver X muy grande (Easting ~3-9 ×10⁵)
+    // Si x0 > 1e6 probablemente es Northing (Y) en el primer componente → orden Y,X
+    var easting,northing;
+    if(x0>3000000){
+      // Probablemente orden (Northing, Easting) — poco habitual pero posible
+      easting=y0; northing=x0;
+    } else {
+      easting=x0; northing=y0;
+    }
+    // Auto-detección zona si no hay claridad
+    if(easting>700000&&utmZone<31)utmZone=31;
+    else if(easting<300000&&utmZone>29)utmZone=29;
     return raw.map(function(pt){
-      var wgs=utmToWgs84(pt[0],pt[1],zone);
+      var e2=pt[0],n2=pt[1];
+      if(pt[0]>3000000){e2=pt[1];n2=pt[0];}
+      var wgs=utmToWgs84(e2,n2,utmZone);
       return[wgs[1],wgs[0]]; // [lon,lat]
     });
   }
