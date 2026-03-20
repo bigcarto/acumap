@@ -1565,7 +1565,11 @@ async function fetchCatastroBuildings(south,west,north,east){
     if(osmAborted)return;
 
     if(!features.length){
-      _osmShowResult('warning','No se encontraron edificios en el área seleccionada.\n\nComprueba que el área cubre territorio español con datos catastrales disponibles.');
+      // Mostrar los primeros 800 chars del GML para diagnóstico
+      var preview=gmlText.replace(/>\s+</g,'><').substring(0,900);
+      _osmShowResult('warning',
+        'El servidor respondió pero no se encontraron edificios parseables.\n\n'
+        +'Respuesta GML (primeros 900 chars):\n'+preview);
       return;
     }
 
@@ -1593,43 +1597,78 @@ async function fetchCatastroBuildings(south,west,north,east){
 }
 
 // ── Parser GML de edificios Catastro INSPIRE ─────────────────────────────────
+// Robusto: no depende del nombre exacto del elemento feature
 function parseCatastroGML(gmlText,utmZone){
   if(!utmZone)utmZone=30;
   var doc=new DOMParser().parseFromString(gmlText,'application/xml');
   var features=[];
-  var buildingEls=doc.getElementsByTagNameNS('*','Building');
 
-  for(var i=0;i<buildingEls.length;i++){
-    var bld=buildingEls[i];
+  // WFS 2.0 usa <wfs:member>, WFS 1.x usa <gml:featureMember>
+  // Recogemos todos los contenedores posibles
+  var memberEls=[];
+  var wfsMem=doc.getElementsByTagNameNS('*','member');
+  var gmlMem=doc.getElementsByTagNameNS('*','featureMember');
+  for(var i=0;i<wfsMem.length;i++)memberEls.push(wfsMem[i]);
+  for(var i=0;i<gmlMem.length;i++)memberEls.push(gmlMem[i]);
 
-    // Plantas sobre rasante → altura (×3 m/planta)
-    var floorEls=bld.getElementsByTagNameNS('*','numberOfFloorsAboveGround');
+  // Si no hay contenedores, intentar parsear directamente el documento
+  // buscando cualquier elemento que contenga geometría y plantas
+  if(!memberEls.length){
+    // fallback: buscar cualquier elemento con nombre que contenga 'uilding'
+    var all=doc.getElementsByTagNameNS('*','*');
+    for(var i=0;i<all.length;i++){
+      var ln=all[i].localName||'';
+      if(ln.indexOf('uilding')!==-1&&ln.indexOf('Part')===-1&&ln.indexOf('part')===-1){
+        memberEls.push(all[i]);
+      }
+    }
+  }
+
+  for(var mi=0;mi<memberEls.length;mi++){
+    var container=memberEls[mi];
+
+    // El feature es el primer hijo Element del contenedor
+    var featureEl=null;
+    for(var ci=0;ci<container.childNodes.length;ci++){
+      if(container.childNodes[ci].nodeType===1){featureEl=container.childNodes[ci];break;}
+    }
+    if(!featureEl)continue;
+
+    // Plantas sobre rasante
+    var floorEls=featureEl.getElementsByTagNameNS('*','numberOfFloorsAboveGround');
     var floors=floorEls.length>0?(parseInt(floorEls[0].textContent)||0):0;
     var defaultHeight=(floors<=0);
     if(floors<=0)floors=1;
     var height=floors*3.0;
 
-    // Referencia catastral (localId del inspireId)
-    var refEls=bld.getElementsByTagNameNS('*','localId');
-    var ref=refEls.length>0?refEls[0].textContent.trim():'';
+    // Referencia catastral
+    var ref='';
+    var refNames=['localId','nationalCadastralReference','inspireId'];
+    for(var ri=0;ri<refNames.length;ri++){
+      var refEl=featureEl.getElementsByTagNameNS('*',refNames[ri])[0];
+      if(refEl){ref=refEl.textContent.trim();break;}
+    }
 
-    // Uso principal (currentUse, puede ser href o texto)
+    // Uso
     var use='';
-    var useEls=bld.getElementsByTagNameNS('*','currentUse');
+    var useEls=featureEl.getElementsByTagNameNS('*','currentUse');
     if(useEls.length>0){
-      var href=useEls[0].getAttribute('xlink:href')||'';
-      if(href){use=href.split('/').pop();}
+      var href=useEls[0].getAttribute('xlink:href')
+              ||useEls[0].getAttributeNS('http://www.w3.org/1999/xlink','href')||'';
+      if(href)use=href.split('/').pop();
       else{
         var inner=useEls[0].getElementsByTagNameNS('*','currentUse');
         if(inner.length>0){
-          var ih=inner[0].getAttribute('xlink:href')||inner[0].textContent.trim();
+          var ih=inner[0].getAttribute('xlink:href')
+                ||inner[0].getAttributeNS('http://www.w3.org/1999/xlink','href')
+                ||inner[0].textContent.trim();
           use=ih.indexOf('/')!==-1?ih.split('/').pop():ih;
         }else{use=useEls[0].textContent.trim();}
       }
     }
 
-    // Geometría — extrae polígonos del elemento (primer anillo exterior)
-    var rings=_extractGMLPolygons(bld,utmZone);
+    // Geometría
+    var rings=_extractGMLPolygons(featureEl,utmZone);
     if(!rings.length)continue;
 
     features.push({ref:ref,floors:floors,height:height,use:use,defaultHeight:defaultHeight,ring:rings[0]});
