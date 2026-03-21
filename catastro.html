@@ -1022,139 +1022,123 @@ function downloadDEMasGeoTIFF(){
   btn.classList.add('loading');
 
   try{
-    // GeoTIFF mínimo: cabecera IFD + datos Float32
-    // Especificación: TIFF 6.0 + GeoTIFF 1.1 tags
-    var W=dem.width, H=dem.height;
-    var nPx=W*H;
+    var W=dem.width, H=dem.height, nPx=W*H;
 
-    // Parámetros geoespaciales: resolución en grados
-    var dX=(dem.east-dem.west)/W;
+    // Resolución pixel (en grados) y tiepoint esquina superior izquierda
+    var dX=(dem.east -dem.west) /W;
     var dY=(dem.north-dem.south)/H;
-    // Origen = esquina superior izquierda (top-left pixel center)
-    var originX=dem.west+dX/2;
-    var originY=dem.north-dY/2;
+    var tpX=dem.west;          // esquina izq del pixel 0,0 (pixel-is-area)
+    var tpY=dem.north;         // esquina sup del pixel 0,0
 
-    // Construir TIFF en LE
-    // Estructura: Header (8) + IFD (2+nTags*12+4) + tag data areas + pixel data
-    var nTags=16;
-    var ifdOffset=8;
-    var ifdSize=2+nTags*12+4;
-    var tagDataOffset=ifdOffset+ifdSize;
+    // ── Layout de memoria ────────────────────────────────────────────────────
+    // TIFF Header             8 B  (off 0)
+    // IFD                     2 + 13*12 + 4 = 162 B  (off 8)
+    // -- data areas --
+    // ModelPixelScale   3×f64  24 B
+    // ModelTiepoint     6×f64  48 B
+    // GeoKeyDirectory  16×u16  32 B  (header+3 keys = 4+3 entries, 4 shorts cada una)
+    // GDAL_NODATA       6 B   ("-9999\0")
+    // [padding to 4B boundary]
+    // Pixel data       nPx×f32
 
-    // Tag data areas (after IFD):
-    // ModelPixelScale (3 doubles = 24 bytes) at tagDataOffset
-    // ModelTiepoints (6 doubles = 48 bytes) at tagDataOffset+24
-    // GeoKeyDirectory (4+3*4 = 28 shorts = 56 bytes... actually 4 shorts per key + header)
-    //   Header: KeyDirectoryVersion, KeyRevision, MinorRevision, NumberOfKeys (4 shorts)
-    //   Keys: GTModelTypeGeoKey(1024)=2(geographic), GTRasterTypeGeoKey(1025)=1, GeographicTypeGeoKey(2048)=4326
-    //   3 keys → (4+3)*4 = 28 bytes
-    // XResolution (2 longs = 8 bytes rational)
-    // YResolution (2 longs = 8 bytes rational)
-    // NoData string "-9999\0" (6 bytes)
-    var offPixelScale=tagDataOffset;          // 24 bytes
-    var offTiepoints=offPixelScale+24;        // 48 bytes
-    var offGeoKeys=offTiepoints+48;           // (4+3)*4 shorts = 28 shorts = 56 bytes
-    var offXRes=offGeoKeys+56;               // 8 bytes
-    var offYRes=offXRes+8;                   // 8 bytes
-    var offNoData=offYRes+8;                 // 6 bytes ("-9999\0")
-    var dataOffset=offNoData+6;
-    // Align dataOffset to 4 bytes
-    if(dataOffset%4!==0)dataOffset+=4-(dataOffset%4);
-    var totalSize=dataOffset+nPx*4;
+    var nTags       = 13;
+    var ifdOff      = 8;
+    var ifdSize     = 2 + nTags*12 + 4;
+    var offScale    = ifdOff + ifdSize;      // 3 doubles = 24 B
+    var offTie      = offScale + 24;         // 6 doubles = 48 B
+    var offGeoKeys  = offTie   + 48;         // 16 shorts = 32 B
+    var offNoData   = offGeoKeys + 32;       // 6 bytes
+    var dataOff     = offNoData + 6;
+    if(dataOff % 4 !== 0) dataOff += 4 - (dataOff % 4);
+    var total       = dataOff + nPx * 4;
 
-    var buf=new ArrayBuffer(totalSize);
-    var dv=new DataView(buf);
-    var off=0;
-    function w8(v){dv.setUint8(off++,v);}
-    function w16(v){dv.setUint16(off,v,true);off+=2;}
-    function w32(v){dv.setUint32(off,v,true);off+=4;}
-    function w64f(v){dv.setFloat64(off,v,true);off+=8;}
+    var buf = new ArrayBuffer(total);
+    var dv  = new DataView(buf);
+    var p   = 0;
+    var u8  = function(v){ dv.setUint8(p++, v); };
+    var u16 = function(v){ dv.setUint16(p, v, true); p+=2; };
+    var u32 = function(v){ dv.setUint32(p, v, true); p+=4; };
+    var f64 = function(v){ dv.setFloat64(p, v, true); p+=8; };
+    var f32 = function(v){ dv.setFloat32(p, v, true); p+=4; };
+    // Escribe una entrada IFD completa (12 bytes)
+    var ifdEntry = function(tag, type, count, valOrOff){
+      u16(tag); u16(type); u32(count);
+      if(type===3 && count<=2){ u16(valOrOff); u16(0); }  // SHORT inline
+      else if(type===4 && count===1){ u32(valOrOff); }    // LONG inline
+      else { u32(valOrOff); }                              // offset
+    };
 
-    // TIFF Header
-    w8(0x49);w8(0x49); // 'II' little-endian
-    w16(42);           // magic
-    w32(ifdOffset);    // offset to first IFD
+    // ── TIFF Header ──────────────────────────────────────────────────────────
+    u8(0x49); u8(0x49);   // 'II' little-endian
+    u16(42);              // TIFF magic
+    u32(ifdOff);          // offset al primer IFD
 
-    // IFD — must be at ifdOffset (=8, already here)
-    w16(nTags);
+    // ── IFD (p debe ser ifdOff = 8 aquí) ─────────────────────────────────────
+    u16(nTags);
+    // Tags en orden ascendente de número (obligatorio en TIFF)
+    ifdEntry(256, 4, 1, W);              // ImageWidth  (LONG)
+    ifdEntry(257, 4, 1, H);              // ImageLength (LONG)
+    ifdEntry(258, 3, 1, 32);             // BitsPerSample = 32
+    ifdEntry(259, 3, 1, 1);             // Compression = none
+    ifdEntry(262, 3, 1, 1);             // PhotometricInterpretation = BlackIsZero
+    ifdEntry(273, 4, 1, dataOff);        // StripOffsets
+    ifdEntry(278, 4, 1, H);             // RowsPerStrip = todas las filas
+    ifdEntry(279, 4, 1, nPx*4);         // StripByteCounts
+    ifdEntry(284, 3, 1, 1);             // PlanarConfiguration = 1
+    ifdEntry(339, 3, 1, 3);             // SampleFormat = 3 (IEEE float)
+    ifdEntry(33550, 12, 3, offScale);   // ModelPixelScaleTag  (3 DOUBLE)
+    ifdEntry(33922, 12, 6, offTie);     // ModelTiepointTag    (6 DOUBLE)
+    // GeoKeyDirectoryTag: 4 entradas × 4 shorts = 16 shorts
+    ifdEntry(34736, 3, 16, offGeoKeys); // GeoKeyDirectoryTag (16 SHORT)
+    u32(0); // NextIFD = 0
 
-    function wTag(tag,type,count,valueOrOffset){
-      // type: 3=SHORT, 4=LONG, 5=RATIONAL, 12=DOUBLE
-      w16(tag);w16(type);w32(count);
-      if(type===3&&count<=2){w16(valueOrOffset);w16(0);}
-      else{w32(valueOrOffset);}
-    }
-    function wTagL(tag,value){w16(tag);w16(4);w32(1);w32(value);}
-    function wTagS(tag,value){w16(tag);w16(3);w32(1);w16(value);w16(0);}
+    // ── ModelPixelScaleTag: scaleX, scaleY, scaleZ ───────────────────────────
+    p = offScale;
+    f64(dX); f64(dY); f64(0);
 
-    // Tags in ascending order by tag number
-    wTagS(256,W);                   // ImageWidth
-    wTagS(257,H);                   // ImageLength
-    wTagS(258,32);                  // BitsPerSample = 32
-    wTagS(259,1);                   // Compression = none
-    wTagS(262,1);                   // PhotometricInterpretation = BlackIsZero
-    wTagL(273,dataOffset);          // StripOffsets
-    wTagS(278,H);                   // RowsPerStrip = all rows
-    wTagL(279,nPx*4);               // StripByteCounts
-    w16(284);w16(3);w32(1);w16(1);w16(0); // PlanarConfiguration=1
-    w16(286);w16(5);w32(1);w32(offXRes);  // XResolution (rational)
-    w16(287);w16(5);w32(1);w32(offYRes);  // YResolution (rational)
-    wTagS(296,1);                   // ResolutionUnit = no absolute (unitless)
-    wTagS(339,3);                   // SampleFormat = IEEE floating point
-    // GeoTIFF tags
-    w16(33550);w16(12);w32(3);w32(offPixelScale);  // ModelPixelScaleTag (3 doubles)
-    w16(33922);w16(12);w32(6);w32(offTiepoints);   // ModelTiepointTag (6 doubles)
-    w16(34736);w16(3);w32(14);w32(offGeoKeys);     // GeoKeyDirectoryTag (14 shorts)
+    // ── ModelTiepointTag: i,j,k, x,y,z ──────────────────────────────────────
+    // pixel (0,0) → esquina superior-izquierda del raster
+    p = offTie;
+    f64(0); f64(0); f64(0);
+    f64(tpX); f64(tpY); f64(0);
 
-    w32(0); // Next IFD offset = 0
+    // ── GeoKeyDirectory: header + 3 keys (16 shorts = 32 bytes) ─────────────
+    // Formato: cada entrada es 4 shorts (KeyID, TIFFTagLocation, Count, Value)
+    // TIFFTagLocation=0 y Count=1 → Value es el valor directo (SHORT)
+    p = offGeoKeys;
+    // Header entry: KeyDirectoryVersion=1, KeyRevision=1, MinorRevision=0, NumberOfKeys=3
+    u16(1); u16(1); u16(0); u16(3);
+    // GTModelTypeGeoKey (1024) = 2 → ModelTypeGeographic
+    u16(1024); u16(0); u16(1); u16(2);
+    // GTRasterTypeGeoKey (1025) = 1 → RasterPixelIsArea
+    u16(1025); u16(0); u16(1); u16(1);
+    // GeographicTypeGeoKey (2048) = 4326 → EPSG:4326 WGS84
+    u16(2048); u16(0); u16(1); u16(4326);
 
-    // ── Tag data areas (off should now be at tagDataOffset) ──
-    off=offPixelScale;
-    w64f(dX); w64f(dY); w64f(0);       // ModelPixelScale: scaleX, scaleY, scaleZ
+    // ── GDAL_NODATA string ───────────────────────────────────────────────────
+    p = offNoData;
+    [45,57,57,57,57,0].forEach(function(c){ u8(c); }); // "-9999\0"
 
-    off=offTiepoints;
-    // Tiepoint: pixel(0,0,0) → world(originX, originY, 0)
-    w64f(0);w64f(0);w64f(0);
-    w64f(originX);w64f(originY);w64f(0);
-
-    off=offGeoKeys;
-    // GeoKeyDirectory: header + 3 keys (14 shorts total)
-    w16(1);w16(1);w16(0);w16(3); // version 1.1, 3 keys
-    w16(1024);w16(0);w16(1);w16(2);  // GTModelTypeGeoKey = ModelTypeGeographic(2)
-    w16(1025);w16(0);w16(1);w16(1);  // GTRasterTypeGeoKey = RasterPixelIsArea(1)
-    w16(2048);w16(0);w16(1);w16(4326); // GeographicTypeGeoKey = EPSG:4326
-
-    off=offXRes;
-    w32(1);w32(1); // XResolution = 1/1
-
-    off=offYRes;
-    w32(1);w32(1); // YResolution = 1/1
-
-    off=offNoData;
-    // GDAL_NODATA string not included (simplify), just pad
-    dv.setUint8(off,0);off+=6;
-
-    // ── Pixel data — Float32, row-major, top-to-bottom ──
-    off=dataOffset;
-    for(var i=0;i<nPx;i++){
+    // ── Datos de elevación Float32, fila a fila, norte→sur ──────────────────
+    p = dataOff;
+    for(var i=0; i<nPx; i++){
       var v=dem.data[i];
-      dv.setFloat32(off,(v<-100||v>9000)?-9999:v,true);
-      off+=4;
+      f32((v<-100||v>9000) ? -9999 : v);
     }
 
-    var blob=new Blob([buf],{type:'image/tiff'});
-    var url=URL.createObjectURL(blob);
-    var a=document.createElement('a');
-    a.href=url; a.download='mdt05_igni.tif'; a.style.display='none';
+    var blob = new Blob([buf], {type:'image/tiff'});
+    var url  = URL.createObjectURL(blob);
+    var a    = document.createElement('a');
+    a.href=url; a.download='mdt05_ign.tif'; a.style.display='none';
     document.body.appendChild(a); a.click();
     document.body.removeChild(a);
-    setTimeout(function(){URL.revokeObjectURL(url);},3000);
+    setTimeout(function(){ URL.revokeObjectURL(url); }, 3000);
 
     btn.classList.remove('loading');
-  }catch(err){
+  } catch(err){
     btn.classList.remove('loading');
     alert('Error al generar el GeoTIFF:\n'+err.message);
-    console.error('GeoTIFF export error:',err);
+    console.error('GeoTIFF export error:', err);
   }
 }
 
