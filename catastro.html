@@ -764,7 +764,11 @@ function parseGPKG(db,tableName,geomCol,srsId,heightCol){
   calculate(); drawIsophones();
   btn.classList.remove('loading'); btn.classList.add('active'); btn.innerHTML=_bldIcon();
   var msg='🏢 '+buildings.length+' edificios'+(skipped?' ('+skipped+' omitidos)':'')
-         +' · campo "'+heightCol+'"'+(utmZone?' · UTM Z'+utmZone:'');
+         +' · campo "'+heightCol+'"'+(utmZone?' · UTM Z'+utmZone:'· WGS84');
+  if(buildings.length>0){
+    var p0=buildings[0].poly[0];
+    msg+=' · lat='+p0[0].toFixed(4)+' lon='+p0[1].toFixed(4);
+  }
   showBadge('bld-badge',msg);
   buildingsLoaded=true;
 }
@@ -889,8 +893,10 @@ function utmToWgs84(easting,northing,zone){
 function renderBuildings(){
   if(buildingLayer){map.removeLayer(buildingLayer);}
   buildingLayer=L.layerGroup();
+  var allLatLngs=[];
   buildings.forEach(function(bld){
     var latLngs=bld.poly.map(function(pt){return[pt[0],pt[1]];});
+    allLatLngs=allLatLngs.concat(latLngs);
     L.polygon(latLngs,{
       color:'#ffd166',weight:1.5,opacity:.9,
       fillColor:'#ffd166',fillOpacity:.22,
@@ -898,6 +904,13 @@ function renderBuildings(){
     }).bindTooltip('h = '+bld.height.toFixed(0)+' m',{sticky:true,className:'leaflet-popup-content-wrapper'}).addTo(buildingLayer);
   });
   if(buildingsActive)buildingLayer.addTo(map);
+  // Zoom automático a la extensión de los edificios cargados
+  if(allLatLngs.length>0){
+    try{
+      var bounds=L.latLngBounds(allLatLngs);
+      if(bounds.isValid())map.fitBounds(bounds,{padding:[30,30],maxZoom:18});
+    }catch(e){console.warn('fitBounds error:',e);}
+  }
 }
 
 // ── Detección de obstrucción por edificios ────────────────────────────────────
@@ -1748,39 +1761,25 @@ function wgs84ToUtm(lat,lon,zone){
   return{x:x,y:y};
 }
 
-// Detecta si las coordenadas son UTM o geográficas, y el orden de ejes,
-// y devuelve siempre [lon, lat] (para el GPKG en WGS84)
-// utmZone: zona UTM esperada (29/30/31) para conversión correcta
+// Convierte coordenadas UTM ETRS89 a [lon,lat] WGS84
+// utmZone viene determinado por el srsname de la petición WFS — no lo sobreescribimos
 function _normalizeCoords(raw,utmZone){
   if(!utmZone)utmZone=30;
   var x0=raw[0][0],y0=raw[0][1];
   if(x0>10000||y0>10000){
-    // Coordenadas UTM (ETRS89) — el GML Catastro puede devolver X muy grande (Easting ~3-9 ×10⁵)
-    // Si x0 > 1e6 probablemente es Northing (Y) en el primer componente → orden Y,X
-    var easting,northing;
-    if(x0>3000000){
-      // Probablemente orden (Northing, Easting) — poco habitual pero posible
-      easting=y0; northing=x0;
-    } else {
-      easting=x0; northing=y0;
-    }
-    // Auto-detección zona si no hay claridad
-    if(easting>700000&&utmZone<31)utmZone=31;
-    else if(easting<300000&&utmZone>29)utmZone=29;
+    // Coordenadas UTM. El Catastro devuelve siempre (Easting, Northing).
+    // Caso excepcional: si el primer valor es > 3,000,000 es el Northing (hemisferio norte ~4M)
     return raw.map(function(pt){
-      var e2=pt[0],n2=pt[1];
-      if(pt[0]>3000000){e2=pt[1];n2=pt[0];}
-      var wgs=utmToWgs84(e2,n2,utmZone);
+      var easting=pt[0],northing=pt[1];
+      if(pt[0]>3000000){easting=pt[1];northing=pt[0];}
+      var wgs=utmToWgs84(easting,northing,utmZone);
       return[wgs[1],wgs[0]]; // [lon,lat]
     });
   }
-  // Coordenadas geográficas — detectar orden (lat,lon) vs (lon,lat)
-  // España: lat ∈ [27,44], lon ∈ [-19,5]
+  // Coordenadas geográficas — España: lat ∈ [27,44], lon ∈ [-19,5]
   if(x0>27&&x0<45){
-    // Primera coordenada parece latitud → formato (lat,lon), invertir
     return raw.map(function(pt){return[pt[1],pt[0]];});
   }
-  // Asumir (lon,lat)
   return raw;
 }
 
