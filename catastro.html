@@ -221,7 +221,6 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
      <tr><td style="font-size:14px;opacity:.8">▲</td><td>IGN Base</td><td>Cartografía base vectorial del IGN, útil como fondo entre mapa oscuro y ortofoto.</td></tr>
      <tr><td>〰</td><td>Isofonas</td><td>Activa el mapa de curvas isofonas calculadas para todos los emisores. Se recalcula en tiempo real.</td></tr>
      <tr><td>🏔</td><td>MDT05</td><td>Descarga el Modelo Digital del Terreno LiDAR 5m del IGN para la extensión visible. Permite calcular apantallamiento por relieve.</td></tr>
-     <tr><td>⬇🏔</td><td>DEM→GeoTIFF</td><td>Exporta el MDT05 actualmente cargado a un fichero GeoTIFF (Float32, EPSG:4326) descargable directamente. Requiere tener el MDT05 activo.</td></tr>
      <tr><td>🏢</td><td>Cargar GPKG</td><td>Carga una capa de plantas de edificios en formato GeoPackage (.gpkg). Soporta geometrías 2D y 3D, proyecciones UTM zona 29/30/31 y WGS84.</td></tr>
      <tr><td>◧</td><td>Edificios</td><td>Activa/desactiva el efecto de apantallamiento acústico de los edificios cargados, sin necesidad de recargar el fichero.</td></tr>
      <tr><td style="font-size:12px;opacity:.9">⬇⊞</td><td>Catastro</td><td>Descarga edificios con altura desde el WFS INSPIRE del Catastro (ovc.catastro.meh.es). Activa el modo, dibuja un rectángulo en el mapa arrastrando, y se generará un fichero <b>edificios_catastro.gpkg</b> listo para cargar. La altura se calcula como <code>numberOfFloorsAboveGround × 3 m</code>. El campo de altura se llama <b>altura</b> y es detectado automáticamente. Requiere conexión directa al servicio WFS; si falla por CORS ejecuta desde servidor local.</td></tr>
@@ -423,7 +422,6 @@ var MapControls=L.Control.extend({
       lbl: '<svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" xmlns="http://www.w3.org/2000/svg"><path d="M3 5h12M3 9h8M3 13h10"/><circle cx="14.5" cy="13" r="2" fill="currentColor" stroke="none" opacity=".4"/></svg>',
       iso: '<svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" xmlns="http://www.w3.org/2000/svg"><path d="M2 13 C4 9, 7 6, 9 9 S14 14, 16 10"/><path d="M2 9 C5 4, 8 3, 11 6 S15 11, 16 7" opacity=".5"/></svg>',
       dem: '<svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" xmlns="http://www.w3.org/2000/svg"><path d="M1 14 L5 7 L9 10 L13 4 L17 14 Z"/></svg>',
-      demdl:'<svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" xmlns="http://www.w3.org/2000/svg"><path d="M1 11 L5 5 L9 8 L13 2 L17 11 Z"/><path d="M9 13v3M7 14.5l2 2 2-2"/></svg>',
       bld: '<svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="7" width="9" height="9" rx="1"/><path d="M7 7V4h7v12"/><path d="M10 10h2M10 13h2"/><path d="M4 10h3M4 13h3"/></svg>',
       btog:'<svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="5" width="9" height="11" rx="1"/><path d="M7 5V3h7v13"/><path d="M13 7v2M13 11v2"/><circle cx="14.5" cy="4" r="2.5" fill="currentColor" stroke="none" opacity=".5"/><path d="M13.5 4h2M14.5 3v2" stroke="currentColor" stroke-width="1.2"/></svg>',
       osmdl:'<svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" xmlns="http://www.w3.org/2000/svg"><rect x="1.5" y="2" width="6" height="6" rx="1"/><rect x="10.5" y="2" width="6" height="6" rx="1"/><rect x="1.5" y="10" width="6" height="6" rx="1"/><path d="M13.5 10v5.5M11 13.5l2.5 2.5 2.5-2.5"/></svg>',
@@ -433,7 +431,6 @@ var MapControls=L.Control.extend({
     mkBtn('ign-btn',I.ign,'IGN Base (cartografía base IGN)',toggleIgnBase,false);
     mkBtn('iso-btn',I.iso,'Mapa de isofonas',toggleIso,false);
     mkBtn('dem-btn',I.dem,'MDT05 IGN — relieve LiDAR 5 m',toggleDEM,false);
-    mkBtn('demdl-btn',I.demdl,'Descargar MDT05 como GeoTIFF',downloadDEMasGeoTIFF,false);
     mkBtn('bld-btn',I.bld,'Cargar edificios (.gpkg)',function(){document.getElementById('bld-file-input').click();},false);
     mkBtn('bld-toggle-btn',I.btog,'Activar/desactivar apantallamiento edificios',toggleBuildings,false);
     mkBtn('osmdl-btn',I.osmdl,'Descargar edificios Catastro INSPIRE (selecciona área)',toggleOsmDlMode,false);
@@ -1011,137 +1008,6 @@ map.on('moveend',function(){
     }
   }
 });
-
-// ── Descarga del MDT05 como GeoTIFF ─────────────────────────────────────────
-function downloadDEMasGeoTIFF(){
-  if(!dem){
-    alert('Primero activa el MDT05 con el botón 🏔 y espera a que se cargue.');
-    return;
-  }
-  var btn=document.getElementById('demdl-btn');
-  btn.classList.add('loading');
-
-  try{
-    var W=dem.width, H=dem.height, nPx=W*H;
-
-    // Resolución pixel (en grados) y tiepoint esquina superior izquierda
-    var dX=(dem.east -dem.west) /W;
-    var dY=(dem.north-dem.south)/H;
-    var tpX=dem.west;          // esquina izq del pixel 0,0 (pixel-is-area)
-    var tpY=dem.north;         // esquina sup del pixel 0,0
-
-    // ── Layout de memoria ────────────────────────────────────────────────────
-    // TIFF Header             8 B  (off 0)
-    // IFD                     2 + 13*12 + 4 = 162 B  (off 8)
-    // -- data areas --
-    // ModelPixelScale   3×f64  24 B
-    // ModelTiepoint     6×f64  48 B
-    // GeoKeyDirectory  16×u16  32 B  (header+3 keys = 4+3 entries, 4 shorts cada una)
-    // GDAL_NODATA       6 B   ("-9999\0")
-    // [padding to 4B boundary]
-    // Pixel data       nPx×f32
-
-    var nTags       = 13;
-    var ifdOff      = 8;
-    var ifdSize     = 2 + nTags*12 + 4;
-    var offScale    = ifdOff + ifdSize;      // 3 doubles = 24 B
-    var offTie      = offScale + 24;         // 6 doubles = 48 B
-    var offGeoKeys  = offTie   + 48;         // 16 shorts = 32 B
-    var offNoData   = offGeoKeys + 32;       // 6 bytes
-    var dataOff     = offNoData + 6;
-    if(dataOff % 4 !== 0) dataOff += 4 - (dataOff % 4);
-    var total       = dataOff + nPx * 4;
-
-    var buf = new ArrayBuffer(total);
-    var dv  = new DataView(buf);
-    var p   = 0;
-    var u8  = function(v){ dv.setUint8(p++, v); };
-    var u16 = function(v){ dv.setUint16(p, v, true); p+=2; };
-    var u32 = function(v){ dv.setUint32(p, v, true); p+=4; };
-    var f64 = function(v){ dv.setFloat64(p, v, true); p+=8; };
-    var f32 = function(v){ dv.setFloat32(p, v, true); p+=4; };
-    // Escribe una entrada IFD completa (12 bytes)
-    var ifdEntry = function(tag, type, count, valOrOff){
-      u16(tag); u16(type); u32(count);
-      if(type===3 && count<=2){ u16(valOrOff); u16(0); }  // SHORT inline
-      else if(type===4 && count===1){ u32(valOrOff); }    // LONG inline
-      else { u32(valOrOff); }                              // offset
-    };
-
-    // ── TIFF Header ──────────────────────────────────────────────────────────
-    u8(0x49); u8(0x49);   // 'II' little-endian
-    u16(42);              // TIFF magic
-    u32(ifdOff);          // offset al primer IFD
-
-    // ── IFD (p debe ser ifdOff = 8 aquí) ─────────────────────────────────────
-    u16(nTags);
-    // Tags en orden ascendente de número (obligatorio en TIFF)
-    ifdEntry(256, 4, 1, W);              // ImageWidth  (LONG)
-    ifdEntry(257, 4, 1, H);              // ImageLength (LONG)
-    ifdEntry(258, 3, 1, 32);             // BitsPerSample = 32
-    ifdEntry(259, 3, 1, 1);             // Compression = none
-    ifdEntry(262, 3, 1, 1);             // PhotometricInterpretation = BlackIsZero
-    ifdEntry(273, 4, 1, dataOff);        // StripOffsets
-    ifdEntry(278, 4, 1, H);             // RowsPerStrip = todas las filas
-    ifdEntry(279, 4, 1, nPx*4);         // StripByteCounts
-    ifdEntry(284, 3, 1, 1);             // PlanarConfiguration = 1
-    ifdEntry(339, 3, 1, 3);             // SampleFormat = 3 (IEEE float)
-    ifdEntry(33550, 12, 3, offScale);   // ModelPixelScaleTag  (3 DOUBLE)
-    ifdEntry(33922, 12, 6, offTie);     // ModelTiepointTag    (6 DOUBLE)
-    // GeoKeyDirectoryTag = 34735  (34736 es GeoDoubleParamsTag — distinto!)
-    // 4 entradas × 4 shorts = 16 shorts
-    ifdEntry(34735, 3, 16, offGeoKeys); // GeoKeyDirectoryTag (16 SHORT)
-    u32(0); // NextIFD = 0
-
-    // ── ModelPixelScaleTag: scaleX, scaleY, scaleZ ───────────────────────────
-    p = offScale;
-    f64(dX); f64(dY); f64(0);
-
-    // ── ModelTiepointTag: i,j,k, x,y,z ──────────────────────────────────────
-    // pixel (0,0) → esquina superior-izquierda del raster
-    p = offTie;
-    f64(0); f64(0); f64(0);
-    f64(tpX); f64(tpY); f64(0);
-
-    // ── GeoKeyDirectory: header + 3 keys (16 shorts = 32 bytes) ─────────────
-    // Formato: cada entrada es 4 shorts (KeyID, TIFFTagLocation, Count, Value)
-    // TIFFTagLocation=0 y Count=1 → Value es el valor directo (SHORT)
-    p = offGeoKeys;
-    // Header entry: KeyDirectoryVersion=1, KeyRevision=1, MinorRevision=0, NumberOfKeys=3
-    u16(1); u16(1); u16(0); u16(3);
-    // GTModelTypeGeoKey (1024) = 2 → ModelTypeGeographic
-    u16(1024); u16(0); u16(1); u16(2);
-    // GTRasterTypeGeoKey (1025) = 1 → RasterPixelIsArea
-    u16(1025); u16(0); u16(1); u16(1);
-    // GeographicTypeGeoKey (2048) = 4326 → EPSG:4326 WGS84
-    u16(2048); u16(0); u16(1); u16(4326);
-
-    // ── GDAL_NODATA string ───────────────────────────────────────────────────
-    p = offNoData;
-    [45,57,57,57,57,0].forEach(function(c){ u8(c); }); // "-9999\0"
-
-    // ── Datos de elevación Float32, fila a fila, norte→sur ──────────────────
-    p = dataOff;
-    for(var i=0; i<nPx; i++){
-      var v=dem.data[i];
-      f32((v<-100||v>9000) ? -9999 : v);
-    }
-
-    var blob = new Blob([buf], {type:'image/tiff'});
-    var url  = URL.createObjectURL(blob);
-    var a    = document.createElement('a');
-    a.href=url; a.download='mdt05_ign.tif'; a.style.display='none';
-    document.body.appendChild(a); a.click();
-    document.body.removeChild(a);
-    setTimeout(function(){ URL.revokeObjectURL(url); }, 3000);
-
-    btn.classList.remove('loading');
-  } catch(err){
-    btn.classList.remove('loading');
-    alert('Error al generar el GeoTIFF:\n'+err.message);
-    console.error('GeoTIFF export error:', err);
-  }
-}
 
 // ===================== ISOPHONE CANVAS LAYER =====================
 var IsoLayer=L.Layer.extend({
