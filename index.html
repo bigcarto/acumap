@@ -174,6 +174,23 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 .gpkg-btn.cancel{background:transparent;color:var(--muted)}.gpkg-btn.cancel:hover{color:var(--text)}
 .gpkg-btn.ok{background:#4a90ff;border-color:#4a90ff;color:#0d0f14;font-weight:700}.gpkg-btn.ok:hover{background:#6aaeff}
 
+/* ── Catastro Buildings Download ─────────────────────────── */
+/* Rubber-band rect overlay */
+#osm-rect{position:absolute;border:2px dashed #4a90ff;background:rgba(74,144,255,.1);pointer-events:none;display:none;z-index:850;box-shadow:inset 0 0 0 1px rgba(74,144,255,.3)}
+/* Catastro download progress modal */
+#osm-modal{display:none;position:fixed;inset:0;z-index:2100;background:rgba(0,0,0,.7);backdrop-filter:blur(4px);align-items:center;justify-content:center}
+#osm-modal.open{display:flex}
+#osm-box{background:#13161d;border:1px solid #252a38;border-radius:12px;width:min(420px,92vw);padding:24px;box-shadow:0 16px 48px rgba(0,0,0,.6)}
+#osm-box h4{font-family:'Space Mono',monospace;font-size:13px;color:#4a90ff;margin-bottom:10px;font-weight:700;display:flex;align-items:center;gap:8px}
+#osm-status-text{font-size:12px;color:var(--muted);margin-bottom:14px;line-height:1.7;min-height:36px}
+#osm-progress{height:3px;background:var(--border);border-radius:2px;overflow:hidden;margin-bottom:16px}
+#osm-progress-bar{height:100%;width:0%;background:#4a90ff;border-radius:2px;transition:width .4s}
+.osm-btns{display:flex;gap:8px;justify-content:flex-end}
+.osm-btn{padding:7px 18px;border-radius:6px;border:1px solid #252a38;font-family:'Space Mono',monospace;font-size:11px;cursor:pointer;transition:all .15s}
+.osm-btn.cancel{background:transparent;color:var(--muted)}.osm-btn.cancel:hover{color:var(--text)}
+.osm-btn.ok{background:#4a90ff;border-color:#4a90ff;color:#0d0f14;font-weight:700}.osm-btn.ok:hover{background:#6aaeff}
+.osm-btn:disabled{opacity:.35;cursor:not-allowed;pointer-events:none}
+
 </style>
 </head>
 <body>
@@ -206,6 +223,7 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
      <tr><td>🏔</td><td>MDT05</td><td>Descarga el Modelo Digital del Terreno LiDAR 5m del IGN para la extensión visible. Permite calcular apantallamiento por relieve.</td></tr>
      <tr><td>🏢</td><td>Cargar GPKG</td><td>Carga una capa de plantas de edificios en formato GeoPackage (.gpkg). Soporta geometrías 2D y 3D, proyecciones UTM zona 29/30/31 y WGS84.</td></tr>
      <tr><td>◧</td><td>Edificios</td><td>Activa/desactiva el efecto de apantallamiento acústico de los edificios cargados, sin necesidad de recargar el fichero.</td></tr>
+     <tr><td style="font-size:12px;opacity:.9">⬇⊞</td><td>Catastro</td><td>Descarga edificios con altura desde el WFS INSPIRE del Catastro (ovc.catastro.meh.es). Activa el modo, dibuja un rectángulo en el mapa arrastrando, y se generará un fichero <b>edificios_catastro.gpkg</b> listo para cargar. La altura se calcula como <code>numberOfFloorsAboveGround × 3 m</code>. El campo de altura se llama <b>altura</b> y es detectado automáticamente. Requiere conexión directa al servicio WFS; si falla por CORS ejecuta desde servidor local.</td></tr>
      <tr><td>?</td><td>Ayuda</td><td>Abre esta guía.</td></tr>
     </table>
    </div>
@@ -245,6 +263,21 @@ L<sub>total</sub> = 10·log₁₀( Σ 10^(Lᵢ/10) )        [suma energética de
   <div class="gpkg-btns">
    <button class="gpkg-btn cancel" onclick="gpkgDialogCancel()">Cancelar</button>
    <button class="gpkg-btn ok" onclick="gpkgDialogOk()">Aceptar</button>
+  </div>
+ </div>
+</div>
+
+<!-- Catastro Buildings Download modal -->
+<div id="osm-modal">
+ <div id="osm-box">
+  <h4>
+   <svg width="16" height="16" viewBox="0 0 18 18" fill="none" stroke="#4a90ff" stroke-width="1.5"><rect x="1.5" y="2" width="6" height="6" rx="1"/><rect x="10.5" y="2" width="6" height="6" rx="1"/><rect x="1.5" y="10" width="6" height="6" rx="1"/><path d="M13.5 10v5.5M11 13.5l2.5 2.5 2.5-2.5"/></svg>
+   Descargar edificios Catastro
+  </h4>
+  <div id="osm-status-text">Preparando descarga…</div>
+  <div id="osm-progress"><div id="osm-progress-bar"></div></div>
+  <div class="osm-btns">
+   <button class="osm-btn cancel" id="osm-abort-btn" onclick="osmAbort()">Cancelar</button>
   </div>
  </div>
 </div>
@@ -298,6 +331,8 @@ L<sub>total</sub> = 10·log₁₀( Σ 10^(Lᵢ/10) )        [suma energética de
 </div><!-- /sidebar -->
 
 <div id="map">
+  <!-- Rubber-band rect for OSM area selection -->
+  <div id="osm-rect"></div>
   <!-- Geocoder search -->
   <div id="geocoder-wrap">
     <input id="geocoder-input" type="text" placeholder="🔍 Buscar topónimo o dirección…" autocomplete="off"
@@ -345,6 +380,9 @@ var emitterCount=0;
 var pnoaVisible=true, isoVisible=false, demVisible=false, ignBaseVisible=false;
 var ignBaseLayer=null;
 var buildings=[], buildingLayer=null, buildingsLoaded=false, buildingsActive=true;
+var osmDlMode=false, osmDrawActive=false;
+var osmDraw={startX:0,startY:0,startLL:null};
+var osmAborted=false;
 var pnoaLayer=null, isoLayer=null;
 var mds=null; // reservado para uso futuro
 var dem=null; // MDT05 {data,width,height,west,east,south,north}
@@ -386,6 +424,7 @@ var MapControls=L.Control.extend({
       dem: '<svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" xmlns="http://www.w3.org/2000/svg"><path d="M1 14 L5 7 L9 10 L13 4 L17 14 Z"/></svg>',
       bld: '<svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="7" width="9" height="9" rx="1"/><path d="M7 7V4h7v12"/><path d="M10 10h2M10 13h2"/><path d="M4 10h3M4 13h3"/></svg>',
       btog:'<svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="5" width="9" height="11" rx="1"/><path d="M7 5V3h7v13"/><path d="M13 7v2M13 11v2"/><circle cx="14.5" cy="4" r="2.5" fill="currentColor" stroke="none" opacity=".5"/><path d="M13.5 4h2M14.5 3v2" stroke="currentColor" stroke-width="1.2"/></svg>',
+      osmdl:'<svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" xmlns="http://www.w3.org/2000/svg"><rect x="1.5" y="2" width="6" height="6" rx="1"/><rect x="10.5" y="2" width="6" height="6" rx="1"/><rect x="1.5" y="10" width="6" height="6" rx="1"/><path d="M13.5 10v5.5M11 13.5l2.5 2.5 2.5-2.5"/></svg>',
       help:'<svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" xmlns="http://www.w3.org/2000/svg"><circle cx="9" cy="9" r="7.5"/><path d="M7 7a2 2 0 1 1 2 2v1.5"/><circle cx="9" cy="13" r=".8" fill="currentColor" stroke="none"/></svg>'
     };
     mkBtn('pnoa-btn',I.pnoa,'Ortofoto PNOA (IGN)',togglePNOA,true);
@@ -394,6 +433,7 @@ var MapControls=L.Control.extend({
     mkBtn('dem-btn',I.dem,'MDT05 IGN — relieve LiDAR 5 m',toggleDEM,false);
     mkBtn('bld-btn',I.bld,'Cargar edificios (.gpkg)',function(){document.getElementById('bld-file-input').click();},false);
     mkBtn('bld-toggle-btn',I.btog,'Activar/desactivar apantallamiento edificios',toggleBuildings,false);
+    mkBtn('osmdl-btn',I.osmdl,'Descargar edificios Catastro INSPIRE (selecciona área)',toggleOsmDlMode,false);
     mkBtn('help-btn',I.help,'Ayuda / instrucciones de uso',openHelp,false);
     return c;
   }
@@ -712,21 +752,25 @@ function parseGPKG(db,tableName,geomCol,srsId,heightCol){
     if(!rings||!rings.length){skipped++;return;}
     rings.forEach(function(ring){
       if(ring.length<3){skipped++;return;}
-      var converted=utmZone?ring.map(function(pt){return utmToWgs84(pt[0],pt[1],utmZone);}):ring;
+      var converted=utmZone?ring.map(function(pt){return utmToWgs84(pt[0],pt[1],utmZone);}):ring.map(function(pt){return[pt[1],pt[0]];});
       buildings.push({poly:converted, height:Math.max(0,h)});
     });
   });
 
   db.close();
+  buildingsLoaded=true;   // debe estar ANTES de calculate()
+  buildingsActive=true;
+  document.getElementById('bld-toggle-btn').classList.add('active');
   renderBuildings();
   calculate(); drawIsophones();
   btn.classList.remove('loading'); btn.classList.add('active'); btn.innerHTML=_bldIcon();
-  buildingsActive=true;
-  document.getElementById('bld-toggle-btn').classList.add('active');
   var msg='🏢 '+buildings.length+' edificios'+(skipped?' ('+skipped+' omitidos)':'')
-         +' · campo "'+heightCol+'"'+(utmZone?' · UTM Z'+utmZone:'');
+         +' · campo "'+heightCol+'"'+(utmZone?' · UTM Z'+utmZone:'· WGS84');
+  if(buildings.length>0){
+    var p0=buildings[0].poly[0];
+    msg+=' · lat='+p0[0].toFixed(4)+' lon='+p0[1].toFixed(4);
+  }
   showBadge('bld-badge',msg);
-  buildingsLoaded=true;
 }
 
 // ── Parseo GeoPackage Binary + WKB ──────────────────────────────────────────
@@ -740,7 +784,9 @@ function parseGPKGGeom(bytes){
   var envLen=[0,32,48,48,64][envInd]||0;
   var wkbOff=8+envLen;
   if(wkbOff>=bytes.length)return null;
-  var view=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength);
+  // Copia segura: garantiza byteOffset=0 independientemente de cómo devuelva sql.js el BLOB
+  var cleanBuf=bytes.buffer.slice(bytes.byteOffset,bytes.byteOffset+bytes.byteLength);
+  var view=new DataView(cleanBuf);
   return parseWKBGeom(view,wkbOff).rings;
 }
 
@@ -847,8 +893,10 @@ function utmToWgs84(easting,northing,zone){
 function renderBuildings(){
   if(buildingLayer){map.removeLayer(buildingLayer);}
   buildingLayer=L.layerGroup();
+  var allLatLngs=[];
   buildings.forEach(function(bld){
     var latLngs=bld.poly.map(function(pt){return[pt[0],pt[1]];});
+    allLatLngs=allLatLngs.concat(latLngs);
     L.polygon(latLngs,{
       color:'#ffd166',weight:1.5,opacity:.9,
       fillColor:'#ffd166',fillOpacity:.22,
@@ -856,6 +904,13 @@ function renderBuildings(){
     }).bindTooltip('h = '+bld.height.toFixed(0)+' m',{sticky:true,className:'leaflet-popup-content-wrapper'}).addTo(buildingLayer);
   });
   if(buildingsActive)buildingLayer.addTo(map);
+  // Zoom automático a la extensión de los edificios cargados
+  if(allLatLngs.length>0){
+    try{
+      var bounds=L.latLngBounds(allLatLngs);
+      if(bounds.isValid())map.fitBounds(bounds,{padding:[30,30],maxZoom:18});
+    }catch(e){console.warn('fitBounds error:',e);}
+  }
 }
 
 // ── Detección de obstrucción por edificios ────────────────────────────────────
@@ -947,7 +1002,6 @@ async function fetchDEM(){
 // Reload DEM on map move when active
 map.on('moveend',function(){
   if(demVisible&&dem){
-    // Check if map moved outside current DEM extent
     var b=map.getBounds();
     if(!dem||b.getWest()<dem.west||b.getEast()>dem.east||b.getSouth()<dem.south||b.getNorth()>dem.north){
       clearTimeout(demFetchTimer);demFetchTimer=setTimeout(fetchDEM,1000);
@@ -1071,6 +1125,7 @@ var rIcon=L.divIcon({className:'',html:'<div style="width:28px;height:28px;backg
 
 // ===================== MAP CLICK =====================
 map.on('click',function(e){
+  if(osmDlMode||osmDrawActive)return;
   if(!mode)return;
   var lat=e.latlng.lat,lng=e.latlng.lng;
   if(mode==='emitter'){
@@ -1287,6 +1342,546 @@ function closeGeocoder(){
   document.getElementById('geocoder-input').value='';
 }
 map.on('click',function(){closeGeocoder();});
+
+// ===================== CATASTRO BUILDINGS DOWNLOAD =====================
+
+function toggleOsmDlMode(){
+  osmDlMode=!osmDlMode;
+  var btn=document.getElementById('osmdl-btn');
+  var sb=document.getElementById('statusbar');
+  if(osmDlMode){
+    btn.classList.add('active');
+    map.dragging.disable();
+    map.getContainer().style.cursor='crosshair';
+    sb.textContent='🗺 Mantén pulsado y arrastra para seleccionar el área del Catastro';
+    sb.className='';
+    var mc=map.getContainer();
+    mc.addEventListener('mousedown',osmMouseDown);
+    mc.addEventListener('touchstart',osmTouchStart,{passive:false});
+  } else {
+    btn.classList.remove('active');
+    map.dragging.enable();
+    map.getContainer().style.cursor='';
+    sb.textContent='Selecciona una herramienta para comenzar';
+    sb.className='';
+    _osmDetachEvents();
+    document.getElementById('osm-rect').style.display='none';
+    osmDrawActive=false;
+  }
+}
+
+function _osmDetachEvents(){
+  var mc=map.getContainer();
+  mc.removeEventListener('mousedown',osmMouseDown);
+  mc.removeEventListener('mousemove',osmMouseMove);
+  mc.removeEventListener('mouseup',osmMouseUp);
+  mc.removeEventListener('touchstart',osmTouchStart);
+  mc.removeEventListener('touchmove',osmTouchMove);
+  mc.removeEventListener('touchend',osmTouchEnd);
+  document.removeEventListener('mouseup',osmMouseUp);
+  document.removeEventListener('touchend',osmTouchEnd);
+}
+
+function osmMouseDown(e){
+  if(!osmDlMode)return;
+  e.preventDefault(); e.stopPropagation();
+  osmDrawActive=true;
+  var rc=map.getContainer().getBoundingClientRect();
+  osmDraw.startX=e.clientX-rc.left;
+  osmDraw.startY=e.clientY-rc.top;
+  osmDraw.startLL=map.containerPointToLatLng([osmDraw.startX,osmDraw.startY]);
+  var el=document.getElementById('osm-rect');
+  el.style.cssText='position:absolute;display:block;left:'+osmDraw.startX+'px;top:'+osmDraw.startY+'px;width:0;height:0;border:2px dashed #4a90ff;background:rgba(74,144,255,.1);pointer-events:none;z-index:850;box-sizing:border-box';
+  var mc=map.getContainer();
+  mc.addEventListener('mousemove',osmMouseMove);
+  mc.addEventListener('mouseup',osmMouseUp);
+  document.addEventListener('mouseup',osmMouseUp);
+}
+
+function osmMouseMove(e){
+  if(!osmDrawActive)return;
+  e.preventDefault();
+  var rc=map.getContainer().getBoundingClientRect();
+  var cx=e.clientX-rc.left, cy=e.clientY-rc.top;
+  var el=document.getElementById('osm-rect');
+  el.style.left=Math.min(osmDraw.startX,cx)+'px';
+  el.style.top=Math.min(osmDraw.startY,cy)+'px';
+  el.style.width=Math.abs(cx-osmDraw.startX)+'px';
+  el.style.height=Math.abs(cy-osmDraw.startY)+'px';
+}
+
+function osmTouchStart(e){
+  if(!osmDlMode||!e.touches.length)return;
+  e.preventDefault();
+  var t=e.touches[0];
+  var fakeEv={clientX:t.clientX,clientY:t.clientY,preventDefault:function(){},stopPropagation:function(){}};
+  osmMouseDown(fakeEv);
+  var mc=map.getContainer();
+  mc.addEventListener('touchmove',osmTouchMove,{passive:false});
+  mc.addEventListener('touchend',osmTouchEnd);
+  document.addEventListener('touchend',osmTouchEnd);
+}
+function osmTouchMove(e){
+  if(!osmDrawActive||!e.touches.length)return;
+  e.preventDefault();
+  var t=e.touches[0];
+  osmMouseMove({clientX:t.clientX,clientY:t.clientY,preventDefault:function(){}});
+}
+function osmTouchEnd(e){
+  var t=e.changedTouches&&e.changedTouches[0];
+  if(t)osmFinishDraw(t.clientX,t.clientY);
+}
+
+function osmMouseUp(e){
+  if(!osmDrawActive)return;
+  osmFinishDraw(e.clientX,e.clientY);
+}
+
+function osmFinishDraw(clientX,clientY){
+  osmDrawActive=false;
+  var mc=map.getContainer();
+  mc.removeEventListener('mousemove',osmMouseMove);
+  mc.removeEventListener('mouseup',osmMouseUp);
+  document.removeEventListener('mouseup',osmMouseUp);
+  document.getElementById('osm-rect').style.display='none';
+
+  var rc=mc.getBoundingClientRect();
+  var endX=clientX-rc.left, endY=clientY-rc.top;
+  var endLL=map.containerPointToLatLng([endX,endY]);
+
+  osmDlMode=false;
+  _osmDetachEvents();
+  document.getElementById('osmdl-btn').classList.remove('active');
+  map.dragging.enable();
+  mc.style.cursor='';
+  document.getElementById('statusbar').textContent='Selecciona una herramienta para comenzar';
+
+  var minLat=Math.min(osmDraw.startLL.lat,endLL.lat);
+  var maxLat=Math.max(osmDraw.startLL.lat,endLL.lat);
+  var minLng=Math.min(osmDraw.startLL.lng,endLL.lng);
+  var maxLng=Math.max(osmDraw.startLL.lng,endLL.lng);
+
+  if((maxLat-minLat)<1e-5||(maxLng-minLng)<1e-5){
+    document.getElementById('statusbar').textContent='Área demasiado pequeña — vuelve a intentarlo';
+    return;
+  }
+
+  var dLat=maxLat-minLat, dLng=maxLng-minLng;
+  // Estimación rápida del área en km² para advertencia previa
+  var estAreaKm2=dLat*111*dLng*111*Math.cos(((maxLat+minLat)/2)*Math.PI/180);
+  if(estAreaKm2>4.5){
+    if(!confirm('El área seleccionada supera los 4 km² (~'+estAreaKm2.toFixed(1)+' km²).\n\n'
+      +'El WFS del Catastro tiene un límite estricto de 4 km² por petición.\n'
+      +'Si continúas el servidor puede devolver error o datos incompletos.\n\n'
+      +'¿Continuar igualmente?'))return;
+  }
+
+  fetchCatastroBuildings(minLat,minLng,maxLat,maxLng);
+}
+
+// ── Catastro INSPIRE WFS — descarga + parsing GML ─────────────────────────────
+
+async function fetchCatastroBuildings(south,west,north,east){
+  osmAborted=false;
+  var modal=document.getElementById('osm-modal');
+  var statusEl=document.getElementById('osm-status-text');
+  var progressBar=document.getElementById('osm-progress-bar');
+  var abortBtn=document.getElementById('osm-abort-btn');
+  progressBar.style.width='5%';
+  progressBar.style.background='#4a90ff';
+  abortBtn.textContent='Cancelar'; abortBtn.disabled=false;
+  abortBtn.onclick=osmAbort;
+  statusEl.textContent='Iniciando consulta al Catastro INSPIRE…';
+  modal.classList.add('open');
+
+  try{
+    if(!SQL)throw new Error('sql.js no está disponible todavía. Espera un momento y vuelve a intentarlo.');
+
+    // WFS 2.0 del Catastro — Feature Type BU:Building
+    // El servicio requiere coordenadas UTM ETRS89; detectamos zona por longitud central
+    var centerLon=(west+east)/2;
+    var utmZoneReq=30;
+    var epsgReq=25830;
+    if(centerLon<-6){utmZoneReq=29;epsgReq=25829;}
+    else if(centerLon>6){utmZoneReq=31;epsgReq=25831;}
+
+    // Convertir las 4 esquinas del bbox a UTM y tomar envolvente
+    var corners=[
+      wgs84ToUtm(south,west,utmZoneReq),wgs84ToUtm(south,east,utmZoneReq),
+      wgs84ToUtm(north,west,utmZoneReq),wgs84ToUtm(north,east,utmZoneReq)
+    ];
+    var minX=Math.min.apply(null,corners.map(function(c){return c.x;}));
+    var maxX=Math.max.apply(null,corners.map(function(c){return c.x;}));
+    var minY=Math.min.apply(null,corners.map(function(c){return c.y;}));
+    var maxY=Math.max.apply(null,corners.map(function(c){return c.y;}));
+
+    // Límite oficial del servicio: 4 km² por petición
+    var areaKm2=(maxX-minX)*(maxY-minY)/1e6;
+    if(areaKm2>4.5){
+      _osmShowResult('error',
+        'El área seleccionada es demasiado grande ('+areaKm2.toFixed(1)+' km²).\n\n'
+        +'El WFS del Catastro tiene un límite de 4 km² por petición.\n'
+        +'Reduce el área de selección en el mapa y vuelve a intentarlo.');
+      return;
+    }
+
+    // Parámetros exactos según documentación oficial Catastro INSPIRE WFS:
+    // - typenames=BU.BUILDINGPART  ← tiene numberOfFloorsAboveGround; BU.BUILDING NO
+    // - srsname=EPSG::25830    (DOBLE dos puntos — notación URN del Catastro)
+    // - bbox=xmin,ymin,xmax,ymax  (sin CRS al final)
+    // - version=2  (no 2.0.0)
+    var url='https://ovc.catastro.meh.es/INSPIRE/wfsBU.aspx'
+      +'?service=wfs&version=2&request=getfeature'
+      +'&typenames=BU.BUILDINGPART'
+      +'&srsname=EPSG::'+epsgReq
+      +'&bbox='+minX.toFixed(2)+','+minY.toFixed(2)+','+maxX.toFixed(2)+','+maxY.toFixed(2);
+
+    progressBar.style.width='15%';
+    statusEl.textContent='Consultando WFS de Catastro INSPIRE…';
+
+    var ctrl=new AbortController();
+    var timer=setTimeout(function(){ctrl.abort();},90000);
+    var resp;
+    try{
+      resp=await fetch(url,{signal:ctrl.signal});
+      clearTimeout(timer);
+    }catch(e){
+      clearTimeout(timer);
+      if(e.name==='AbortError')throw new Error('Timeout: el servicio WFS tardó más de 90 segundos. El área puede ser demasiado grande.');
+      throw new Error('Error de red: '+e.message
+        +'\n\nPosible bloqueo CORS. Prueba ejecutando desde un servidor local:\n  python -m http.server 8080  →  http://localhost:8080/');
+    }
+
+    if(osmAborted)return;
+    if(!resp.ok)throw new Error('El servidor Catastro respondió HTTP '+resp.status);
+
+    progressBar.style.width='45%';
+    statusEl.textContent='Recibiendo GML del Catastro…';
+
+    // El Catastro devuelve ISO-8859-1 — hay que decodificar explícitamente
+    // (resp.text() usa UTF-8 por defecto y corrompe el XML)
+    var rawBuf=await resp.arrayBuffer();
+    var gmlText=new TextDecoder('iso-8859-1').decode(rawBuf);
+    if(osmAborted)return;
+
+    // Detectar error WFS (ExceptionReport)
+    if(gmlText.indexOf('ExceptionReport')!==-1||gmlText.indexOf('ows:Exception')!==-1){
+      var errDoc=new DOMParser().parseFromString(gmlText,'application/xml');
+      var errEl=errDoc.getElementsByTagNameNS('*','ExceptionText')[0];
+      throw new Error('El servidor WFS devolvió un error:\n'+(errEl?errEl.textContent:'respuesta no válida'));
+    }
+
+    progressBar.style.width='65%';
+    statusEl.textContent='Procesando GML del Catastro…';
+    await new Promise(function(r){setTimeout(r,20);});
+    if(osmAborted)return;
+
+    var features=parseCatastroGML(gmlText,utmZoneReq);
+    console.log('[Catastro WFS] Features parsed:', features.length);
+    if(osmAborted)return;
+
+    if(!features.length){
+      _osmShowResult('warning','No se encontraron edificios en el área seleccionada.\n\nComprueba que el área cubre territorio español (excepto País Vasco y Navarra).');
+      return;
+    }
+
+    progressBar.style.width='82%';
+    statusEl.textContent='Generando GeoPackage con '+features.length+' edificios…';
+    await new Promise(function(r){setTimeout(r,20);});
+    if(osmAborted)return;
+
+    var gpkgBytes=buildCatastroGPKG(features);
+    downloadBytes(gpkgBytes,'edificios_catastro.gpkg');
+
+    var defaultCount=features.filter(function(f){return f.defaultHeight;}).length;
+    var msg='✓ '+features.length+' partes de edificio (BU.BUILDINGPART) del Catastro.\n\n'
+      +'Fichero: edificios_catastro.gpkg\nCampo de altura: "altura" (m)\n'
+      +'Altura = plantas × 3 m (o medida real si disponible)\n';
+    if(defaultCount>0)msg+='⚠ '+defaultCount+' sin plantas informadas → altura por defecto 3 m\n';
+    if(features.length>=3000)msg+='⚠ Se alcanzó el límite de 3000 features. Reduce el área.\n';
+    msg+='\nCárgalo con el botón 🏢 del mapa.';
+    _osmShowResult('ok',msg);
+
+  }catch(err){
+    if(osmAborted)return;
+    _osmShowResult('error','Error: '+err.message);
+    console.error('Catastro WFS error:',err);
+  }
+}
+
+// ── Parser GML de edificios Catastro INSPIRE ─────────────────────────────────
+// Robusto: no depende del nombre exacto del elemento feature
+function parseCatastroGML(gmlText,utmZone){
+  if(!utmZone)utmZone=30;
+  var doc=new DOMParser().parseFromString(gmlText,'application/xml');
+  var features=[];
+
+  // WFS 2.0 usa <wfs:member>, WFS 1.x usa <gml:featureMember>
+  // Recogemos todos los contenedores posibles
+  var memberEls=[];
+  var wfsMem=doc.getElementsByTagNameNS('*','member');
+  var gmlMem=doc.getElementsByTagNameNS('*','featureMember');
+  for(var i=0;i<wfsMem.length;i++)memberEls.push(wfsMem[i]);
+  for(var i=0;i<gmlMem.length;i++)memberEls.push(gmlMem[i]);
+
+  // Si no hay contenedores, intentar parsear directamente el documento
+  // buscando cualquier elemento que contenga geometría y plantas
+  if(!memberEls.length){
+    // fallback: buscar cualquier elemento con nombre que contenga 'uilding'
+    var all=doc.getElementsByTagNameNS('*','*');
+    for(var i=0;i<all.length;i++){
+      var ln=all[i].localName||'';
+      if(ln.indexOf('uilding')!==-1&&ln.indexOf('Part')===-1&&ln.indexOf('part')===-1){
+        memberEls.push(all[i]);
+      }
+    }
+  }
+
+  for(var mi=0;mi<memberEls.length;mi++){
+    var container=memberEls[mi];
+
+    // El feature es el primer hijo Element del contenedor
+    var featureEl=null;
+    for(var ci=0;ci<container.childNodes.length;ci++){
+      if(container.childNodes[ci].nodeType===1){featureEl=container.childNodes[ci];break;}
+    }
+    if(!featureEl)continue;
+
+    // Plantas sobre rasante — en BU.BUILDINGPART viene en bu-base:numberOfFloorsAboveGround
+    var floorEls=featureEl.getElementsByTagNameNS('*','numberOfFloorsAboveGround');
+    var floors=floorEls.length>0?(parseInt(floorEls[0].textContent)||0):0;
+
+    // Altura en metros — si viene directamente (bu-base:heightAboveGround o bu-core2d:height)
+    var heightMeters=0;
+    var hNames=['heightAboveGround','height','measuredHeight'];
+    for(var hi=0;hi<hNames.length;hi++){
+      var hEls=featureEl.getElementsByTagNameNS('*',hNames[hi]);
+      for(var hj=0;hj<hEls.length;hj++){
+        var hv=parseFloat(hEls[hj].textContent);
+        if(!isNaN(hv)&&hv>0){heightMeters=hv;break;}
+      }
+      if(heightMeters>0)break;
+    }
+
+    var defaultHeight=false;
+    var height;
+    if(heightMeters>0){
+      height=heightMeters;           // altura real en metros
+    } else if(floors>0){
+      height=floors*3.0;             // 3 m/planta
+    } else {
+      height=3.0;                    // fallback: 1 planta
+      defaultHeight=true;
+    }
+
+    // Referencia catastral
+    var ref='';
+    var refNames=['localId','nationalCadastralReference','inspireId'];
+    for(var ri=0;ri<refNames.length;ri++){
+      var refEl=featureEl.getElementsByTagNameNS('*',refNames[ri])[0];
+      if(refEl){ref=refEl.textContent.trim();break;}
+    }
+
+    // Uso
+    var use='';
+    var useEls=featureEl.getElementsByTagNameNS('*','currentUse');
+    if(useEls.length>0){
+      var href=useEls[0].getAttribute('xlink:href')
+              ||useEls[0].getAttributeNS('http://www.w3.org/1999/xlink','href')||'';
+      if(href)use=href.split('/').pop();
+      else{
+        var inner=useEls[0].getElementsByTagNameNS('*','currentUse');
+        if(inner.length>0){
+          var ih=inner[0].getAttribute('xlink:href')
+                ||inner[0].getAttributeNS('http://www.w3.org/1999/xlink','href')
+                ||inner[0].textContent.trim();
+          use=ih.indexOf('/')!==-1?ih.split('/').pop():ih;
+        }else{use=useEls[0].textContent.trim();}
+      }
+    }
+
+    // Geometría
+    var rings=_extractGMLPolygons(featureEl,utmZone);
+    if(!rings.length)continue;
+
+    features.push({ref:ref,floors:floors,height:height,use:use,defaultHeight:defaultHeight,ring:rings[0]});
+  }
+  return features;
+}
+
+// Extrae anillos exteriores de todos los gml:Polygon dentro de un elemento
+// Extrae anillos exteriores — soporta Polygon, PolygonPatch y MultiSurface
+function _extractGMLPolygons(el,utmZone){
+  var rings=[];
+
+  // El Catastro usa gml:PolygonPatch (dentro de gml:Surface/gml:patches),
+  // no gml:Polygon. Buscamos ambos.
+  var polys=Array.from(el.getElementsByTagNameNS('*','PolygonPatch'));
+  var polys2=Array.from(el.getElementsByTagNameNS('*','Polygon'));
+  var allPolys=polys.concat(polys2);
+
+  for(var p=0;p<allPolys.length;p++){
+    var extEl=allPolys[p].getElementsByTagNameNS('*','exterior');
+    if(!extEl.length)continue;
+    var lr=extEl[0].getElementsByTagNameNS('*','LinearRing');
+    var targetEl=lr.length?lr[0]:extEl[0];
+    var plEl=targetEl.getElementsByTagNameNS('*','posList');
+    if(plEl.length){
+      var ring=_gmlPosListToRing(plEl[0].textContent,utmZone);
+      if(ring&&ring.length>=4){rings.push(ring);break;}
+    } else {
+      var coordEl=targetEl.getElementsByTagNameNS('*','coordinates');
+      if(coordEl.length){
+        var ring=_gmlCoordsToRing(coordEl[0].textContent,utmZone);
+        if(ring&&ring.length>=4){rings.push(ring);break;}
+      }
+    }
+  }
+  return rings;
+}
+
+// Convierte gml:posList a array [[lon,lat], ...], detectando orden de ejes y CRS
+function _gmlPosListToRing(posStr,utmZone){
+  var nums=posStr.trim().split(/\s+/).map(Number);
+  if(nums.length<8)return null;
+  var raw=[];
+  for(var i=0;i+1<nums.length;i+=2)raw.push([nums[i],nums[i+1]]);
+  if(!raw.length)return null;
+  return _normalizeCoords(raw,utmZone);
+}
+
+function _gmlCoordsToRing(coordStr,utmZone){
+  var raw=[];
+  var pairs=coordStr.trim().split(/\s+/);
+  for(var i=0;i<pairs.length;i++){
+    var parts=pairs[i].split(',').map(Number);
+    if(parts.length>=2&&!isNaN(parts[0])&&!isNaN(parts[1]))raw.push([parts[0],parts[1]]);
+  }
+  if(raw.length<4)return null;
+  return _normalizeCoords(raw,utmZone);
+}
+
+// Conversión WGS84/ETRS89 → UTM (Transverse Mercator directa)
+function wgs84ToUtm(lat,lon,zone){
+  var a=6378137.0,f=1/298.257223563;
+  var b=a*(1-f),e2=1-(b*b)/(a*a),ep2=e2/(1-e2),k0=0.9996;
+  var lon0=(zone*6-183)*Math.PI/180;
+  var latR=lat*Math.PI/180,lonR=lon*Math.PI/180;
+  var sinLat=Math.sin(latR),cosLat=Math.cos(latR),tanLat=Math.tan(latR);
+  var N=a/Math.sqrt(1-e2*sinLat*sinLat);
+  var T=tanLat*tanLat;
+  var C=ep2*cosLat*cosLat;
+  var A=cosLat*(lonR-lon0);
+  var M=a*((1-e2/4-3*e2*e2/64-5*e2*e2*e2/256)*latR
+    -(3*e2/8+3*e2*e2/32+45*e2*e2*e2/1024)*Math.sin(2*latR)
+    +(15*e2*e2/256+45*e2*e2*e2/1024)*Math.sin(4*latR)
+    -(35*e2*e2*e2/3072)*Math.sin(6*latR));
+  var x=k0*N*(A+(1-T+C)*A*A*A/6+(5-18*T+T*T+72*C-58*ep2)*A*A*A*A*A/120)+500000;
+  var y=k0*(M+N*tanLat*(A*A/2+(5-T+9*C+4*C*C)*A*A*A*A/24+(61-58*T+T*T+600*C-330*ep2)*A*A*A*A*A*A/720));
+  return{x:x,y:y};
+}
+
+// Convierte coordenadas UTM ETRS89 a [lon,lat] WGS84
+// utmZone viene determinado por el srsname de la petición WFS — no lo sobreescribimos
+function _normalizeCoords(raw,utmZone){
+  if(!utmZone)utmZone=30;
+  var x0=raw[0][0],y0=raw[0][1];
+  if(x0>10000||y0>10000){
+    // Coordenadas UTM. El Catastro devuelve siempre (Easting, Northing).
+    // Caso excepcional: si el primer valor es > 3,000,000 es el Northing (hemisferio norte ~4M)
+    return raw.map(function(pt){
+      var easting=pt[0],northing=pt[1];
+      if(pt[0]>3000000){easting=pt[1];northing=pt[0];}
+      var wgs=utmToWgs84(easting,northing,utmZone);
+      return[wgs[1],wgs[0]]; // [lon,lat]
+    });
+  }
+  // Coordenadas geográficas — España: lat ∈ [27,44], lon ∈ [-19,5]
+  if(x0>27&&x0<45){
+    return raw.map(function(pt){return[pt[1],pt[0]];});
+  }
+  return raw;
+}
+
+function _osmShowResult(type,msg){
+  var progressBar=document.getElementById('osm-progress-bar');
+  var statusEl=document.getElementById('osm-status-text');
+  var abortBtn=document.getElementById('osm-abort-btn');
+  progressBar.style.width='100%';
+  progressBar.style.background=type==='ok'?'#64b5f6':type==='warning'?'#ffc547':'#ef5350';
+  statusEl.textContent=msg;
+  abortBtn.textContent='Cerrar'; abortBtn.disabled=false;
+  abortBtn.onclick=function(){osmCloseModal();abortBtn.onclick=osmAbort;abortBtn.textContent='Cancelar';};
+}
+
+function osmAbort(){osmAborted=true;osmCloseModal();}
+function osmCloseModal(){
+  document.getElementById('osm-modal').classList.remove('open');
+  var bar=document.getElementById('osm-progress-bar');
+  bar.style.width='0%'; bar.style.background='#4a90ff';
+}
+
+// ── GPKG geometry blob ─────────────────────────────────────────────────────────
+function makeGPKGGeomBlob(ring){
+  var nPts=ring.length;
+  var buf=new ArrayBuffer(8+1+4+4+4+nPts*16);
+  var dv=new DataView(buf); var off=0;
+  dv.setUint8(off++,0x47); dv.setUint8(off++,0x50); // 'G','P'
+  dv.setUint8(off++,0x00); // version
+  dv.setUint8(off++,0x01); // flags: LE header, no envelope, non-empty
+  dv.setInt32(off,4326,true); off+=4; // srs_id
+  dv.setUint8(off++,0x01); // WKB LE
+  dv.setUint32(off,3,true); off+=4; // type: Polygon
+  dv.setUint32(off,1,true); off+=4; // num_rings
+  dv.setUint32(off,nPts,true); off+=4;
+  for(var i=0;i<nPts;i++){
+    dv.setFloat64(off,ring[i][0],true); off+=8; // x=lon
+    dv.setFloat64(off,ring[i][1],true); off+=8; // y=lat
+  }
+  return new Uint8Array(buf);
+}
+
+// ── GPKG builder — Edificios Catastro ────────────────────────────────────────
+function buildCatastroGPKG(features){
+  if(!SQL)throw new Error('sql.js no está disponible todavía. Espera un momento y vuelve a intentarlo.');
+  var db=new SQL.Database();
+
+  db.run('CREATE TABLE gpkg_spatial_ref_sys(srs_name TEXT NOT NULL,srs_id INTEGER NOT NULL PRIMARY KEY,organization TEXT NOT NULL,organization_coordsys_id INTEGER NOT NULL,definition TEXT NOT NULL,description TEXT)');
+  db.run("INSERT INTO gpkg_spatial_ref_sys VALUES('WGS 84 geographic 2D',4326,'EPSG',4326,'GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563,AUTHORITY[\"EPSG\",\"7030\"]],AUTHORITY[\"EPSG\",\"6326\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4326\"]]','WGS 84')");
+  db.run("INSERT INTO gpkg_spatial_ref_sys VALUES('Undefined Cartesian SRS',-1,'NONE',-1,'undefined','')");
+  db.run("INSERT INTO gpkg_spatial_ref_sys VALUES('Undefined Geographic SRS',0,'NONE',0,'undefined','')");
+
+  db.run('CREATE TABLE gpkg_contents(table_name TEXT NOT NULL PRIMARY KEY,data_type TEXT NOT NULL,identifier TEXT,description TEXT DEFAULT \'\',last_change DATETIME NOT NULL DEFAULT (strftime(\'%Y-%m-%dT%H:%M:%S.000Z\',\'now\')),min_x DOUBLE,min_y DOUBLE,max_x DOUBLE,max_y DOUBLE,srs_id INTEGER)');
+
+  var minX=180,minY=90,maxX=-180,maxY=-90;
+  features.forEach(function(f){f.ring.forEach(function(pt){if(pt[0]<minX)minX=pt[0];if(pt[0]>maxX)maxX=pt[0];if(pt[1]<minY)minY=pt[1];if(pt[1]>maxY)maxY=pt[1];});});
+  db.run("INSERT INTO gpkg_contents VALUES('edificios_catastro','features','edificios_catastro','Edificios Catastro INSPIRE con altura - AcuMap',strftime('%Y-%m-%dT%H:%M:%S.000Z','now'),?,?,?,?,4326)",[minX,minY,maxX,maxY]);
+
+  db.run('CREATE TABLE gpkg_geometry_columns(table_name TEXT NOT NULL,column_name TEXT NOT NULL,geometry_type_name TEXT NOT NULL,srs_id INTEGER NOT NULL,z TINYINT NOT NULL,m TINYINT NOT NULL,CONSTRAINT pk_geom_cols PRIMARY KEY(table_name,column_name))');
+  db.run("INSERT INTO gpkg_geometry_columns VALUES('edificios_catastro','geom','POLYGON',4326,0,0)");
+
+  // Campos: ref_cat (referencia catastral), plantas, altura (m), uso
+  db.run('CREATE TABLE edificios_catastro(fid INTEGER PRIMARY KEY AUTOINCREMENT,geom BLOB,ref_cat TEXT,plantas INTEGER,altura REAL,uso TEXT)');
+
+  var stmt=db.prepare('INSERT INTO edificios_catastro(geom,ref_cat,plantas,altura,uso)VALUES(?,?,?,?,?)');
+  features.forEach(function(f){
+    stmt.run([makeGPKGGeomBlob(f.ring),f.ref,f.floors,f.height,f.use]);
+  });
+  stmt.free();
+  var bytes=db.export();
+  db.close();
+  return bytes;
+}
+
+function downloadBytes(bytes,filename){
+  var blob=new Blob([bytes],{type:'application/geopackage+sqlite3'});
+  var url=URL.createObjectURL(blob);
+  var a=document.createElement('a');
+  a.href=url; a.download=filename; a.style.display='none';
+  document.body.appendChild(a); a.click();
+  document.body.removeChild(a);
+  setTimeout(function(){URL.revokeObjectURL(url);},2000);
+}
 
 renderSidebar();
 
