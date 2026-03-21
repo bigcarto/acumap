@@ -1088,8 +1088,9 @@ function downloadDEMasGeoTIFF(){
     ifdEntry(339, 3, 1, 3);             // SampleFormat = 3 (IEEE float)
     ifdEntry(33550, 12, 3, offScale);   // ModelPixelScaleTag  (3 DOUBLE)
     ifdEntry(33922, 12, 6, offTie);     // ModelTiepointTag    (6 DOUBLE)
-    // GeoKeyDirectoryTag: 4 entradas × 4 shorts = 16 shorts
-    ifdEntry(34736, 3, 16, offGeoKeys); // GeoKeyDirectoryTag (16 SHORT)
+    // GeoKeyDirectoryTag = 34735  (34736 es GeoDoubleParamsTag — distinto!)
+    // 4 entradas × 4 shorts = 16 shorts
+    ifdEntry(34735, 3, 16, offGeoKeys); // GeoKeyDirectoryTag (16 SHORT)
     u32(0); // NextIFD = 0
 
     // ── ModelPixelScaleTag: scaleX, scaleY, scaleZ ───────────────────────────
