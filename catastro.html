@@ -758,6 +758,7 @@ function parseGPKG(db,tableName,geomCol,srsId,heightCol){
   });
 
   db.close();
+  buildingsLoaded=true;   // debe estar ANTES de calculate()
   buildingsActive=true;
   document.getElementById('bld-toggle-btn').classList.add('active');
   renderBuildings();
@@ -770,7 +771,6 @@ function parseGPKG(db,tableName,geomCol,srsId,heightCol){
     msg+=' · lat='+p0[0].toFixed(4)+' lon='+p0[1].toFixed(4);
   }
   showBadge('bld-badge',msg);
-  buildingsLoaded=true;
 }
 
 // ── Parseo GeoPackage Binary + WKB ──────────────────────────────────────────
