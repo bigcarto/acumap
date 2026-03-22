@@ -13,8 +13,8 @@
 :root{--bg:#0d0f14;--panel:#13161d;--panel2:#1a1e28;--border:#252a38;--accent:#4a90ff;--warn:#ffc547;--text:#ffffff;--muted:#c8d0dc;--emitter:#ff6b35;--receptor:#4a90ff;--font-mono:'Space Mono',monospace;--font:'DM Sans',sans-serif}
 *{margin:0;padding:0;box-sizing:border-box}
 html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);font-family:var(--font)}
-#app{display:flex;height:100vh}
-#sidebar{width:390px;min-width:390px;background:var(--panel);border-right:1px solid var(--border);display:flex;flex-direction:column;z-index:1000;overflow:hidden}
+#app{display:flex;height:100vh;min-width:0}
+#sidebar{width:390px;min-width:390px;background:var(--panel);border-right:1px solid var(--border);display:flex;flex-direction:column;z-index:1000;overflow:hidden;transition:width .25s ease,min-width .25s ease,max-height .25s ease}
 #header{padding:20px 20px 16px;border-bottom:1px solid var(--border);background:var(--bg)}
 #header .logo{font-family:var(--font-mono);font-size:18px;font-weight:700;color:var(--accent);letter-spacing:-.5px}
 #header .logo span{color:var(--muted)}
@@ -23,6 +23,8 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 .tool-btn{flex:1;padding:9px 8px;border-radius:8px;border:1px solid var(--border);background:var(--panel2);color:var(--muted);font-family:var(--font);font-size:12px;font-weight:500;cursor:pointer;transition:all .15s;display:flex;flex-direction:column;align-items:center;gap:5px}
 .tool-btn .icon{font-size:18px}
 .tool-btn:hover{border-color:var(--accent);color:var(--text)}
+.tool-btn.toggle-btn{flex:.85;background:rgba(74,144,255,.08);border-color:rgba(74,144,255,.35)}
+.tool-btn.toggle-btn.active{background:rgba(74,144,255,.18);border-color:var(--accent);color:var(--text)}
 .tool-btn.ae{background:rgba(255,107,53,.12);border-color:var(--emitter);color:var(--emitter)}
 .tool-btn.ar{background:rgba(74,144,255,.15);border-color:var(--receptor);color:var(--receptor)}
 .tool-btn.ad{background:rgba(239,68,68,.12);border-color:#ef4444;color:#ef4444}
@@ -85,7 +87,7 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 .result-desc{margin-top:6px;font-size:10px;color:var(--text);font-weight:600;display:flex;justify-content:space-between;align-items:center;padding-bottom:8px;border-bottom:1px solid var(--border)}
 .result-badge{display:inline-block;padding:2px 6px;border-radius:4px;font-size:10px;font-weight:600;font-family:var(--font-mono)}
 .formula-row{margin-top:0;padding:5px 7px;background:var(--panel2);border-radius:6px;font-family:var(--font-mono);font-size:9px;color:var(--muted);line-height:1.6;white-space:pre-wrap;word-break:break-all}
-#map{flex:1;position:relative}
+#map{flex:1;position:relative;min-width:0}
 .empty-hint{text-align:center;padding:20px 10px;color:var(--muted);font-size:12px;line-height:1.7}
 .empty-hint .big{font-size:28px;margin-bottom:8px}
 #statusbar{padding:8px 16px;font-size:11px;color:var(--muted);font-family:var(--font-mono);border-bottom:1px solid var(--border);background:var(--bg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -191,6 +193,34 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 .osm-btn.ok{background:#4a90ff;border-color:#4a90ff;color:#0d0f14;font-weight:700}.osm-btn.ok:hover{background:#6aaeff}
 .osm-btn:disabled{opacity:.35;cursor:not-allowed;pointer-events:none}
 
+#sidebar-footer{padding:10px 16px;border-top:1px solid var(--border);font-size:9px;line-height:1.6;color:var(--muted);font-family:var(--font)}
+#sidebar-footer span{display:block;font-weight:700;color:var(--text)}
+
+#app.panels-collapsed #sidebar{
+  width:84px;
+  min-width:84px;
+}
+#app.panels-collapsed #header,
+#app.panels-collapsed #statusbar,
+#app.panels-collapsed #scroll-area,
+#app.panels-collapsed #sidebar-footer{
+  display:none;
+}
+#app.panels-collapsed #tools{
+  padding:14px 12px;
+  border-bottom:none;
+}
+#app.panels-collapsed #tools .tool-btn:not(#btn-panels){
+  display:none;
+}
+#app.panels-collapsed #btn-panels{
+  flex:1;
+  min-height:60px;
+}
+#result-panel{
+  transition:transform .25s ease,opacity .2s ease,visibility .2s ease;
+}
+
 /* Responsive */
 @media (max-width: 1200px){
   #sidebar{width:360px;min-width:360px}
@@ -208,19 +238,23 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 }
 
 @media (max-width: 768px){
-  html,body{height:auto;min-height:100%;overflow:auto}
-  #app{height:auto;min-height:100dvh;flex-direction:column}
+  html,body{height:100%;min-height:100%;overflow:hidden}
+  #app{height:100dvh;min-height:100dvh;flex-direction:column}
   #sidebar{
     width:100%;
     min-width:0;
-    max-height:46dvh;
+    max-height:none;
     border-right:none;
     border-bottom:1px solid var(--border);
+  }
+  #app:not(.panels-collapsed) #sidebar{
+    flex:1;
+    height:100dvh;
   }
   #header{padding:16px 16px 12px}
   #tools{
     display:grid;
-    grid-template-columns:repeat(4,minmax(0,1fr));
+    grid-template-columns:repeat(5,minmax(0,1fr));
     gap:8px;
     padding:12px 16px;
   }
@@ -236,8 +270,14 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
   .h-row{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:8px}
   .h-label,.ref-dist-label{min-width:0}
   #map{
-    min-height:54dvh;
-    height:54dvh;
+    display:none;
+    min-height:0;
+    height:0;
+  }
+  #app.panels-collapsed #map{
+    display:block;
+    min-height:calc(100dvh - 88px);
+    height:calc(100dvh - 88px);
   }
   #geocoder-wrap{
     top:10px;
@@ -271,10 +311,18 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
   #help-body{padding:16px}
   .h-table{display:block;overflow-x:auto}
   #gpkg-box,#osm-box{width:min(420px,calc(100vw - 20px));padding:18px}
+  #app.panels-collapsed #sidebar{width:100%;min-width:0;max-height:88px;flex:0 0 auto;height:auto}
+  #app.panels-collapsed #tools{
+    grid-template-columns:minmax(0,1fr);
+    padding:12px 16px;
+  }
+  #app.panels-collapsed #btn-panels{
+    min-height:52px;
+  }
 }
 
 @media (max-width: 520px){
-  #sidebar{max-height:50dvh}
+  #sidebar{max-height:none}
   #header .logo{font-size:17px}
   #header .subtitle{font-size:10px}
   #tools{grid-template-columns:repeat(2,minmax(0,1fr))}
@@ -295,7 +343,7 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
   .result-value{font-size:28px}
   .formula-row{font-size:8px}
   #statusbar{font-size:10px}
-  #map{min-height:50dvh;height:50dvh}
+  #app.panels-collapsed #map{min-height:calc(100dvh - 82px);height:calc(100dvh - 82px)}
   .leaflet-control-zoom a,.map-ctrl-btn{width:32px;height:32px}
   #help-header{padding:16px 16px 12px}
   #help-header .htitle{font-size:13px}
@@ -303,6 +351,7 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
   .h-table td:nth-child(2){width:auto}
   .gpkg-btns,.osm-btns{flex-direction:column}
   .gpkg-btn,.osm-btn{width:100%}
+  #app.panels-collapsed #sidebar{max-height:82px}
 }
 
 </style>
@@ -322,6 +371,7 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
    <div class="h-section">
     <h3>Herramientas del panel lateral</h3>
     <table class="h-table">
+     <tr><td>⇔</td><td>Contraer</td><td>Oculta o muestra los paneles laterales. En móvil, cuando está expandido solo se ve el panel de trabajo; al contraerlo aparece el mapa con la barra de resultados.</td></tr>
      <tr><td>📡</td><td>Emisor</td><td>Activa el modo de colocación de focos emisores. Cada clic en el mapa añade un emisor con nivel configurable (dB(A) a la distancia de referencia d₀).</td></tr>
      <tr><td>🎯</td><td>Receptor</td><td>Coloca el punto receptor. Solo puede haber uno. El cálculo se actualiza en tiempo real al moverlo.</td></tr>
      <tr><td>🗑️</td><td>Borrar</td><td>Elimina el punto (emisor o receptor) sobre el que se hace clic.</td></tr>
@@ -403,6 +453,7 @@ L<sub>total</sub> = 10·log₁₀( Σ 10^(Lᵢ/10) )        [suma energética de
     <div class="subtitle">Calculadora de Ruido Ambiental</div>
   </div>
   <div id="tools">
+    <button class="tool-btn toggle-btn" id="btn-panels" onclick="togglePanels()"><span class="icon">⇔</span><span class="tool-label">Contraer</span></button>
     <button class="tool-btn" id="btn-emitter" onclick="setMode('emitter')"><span class="icon">📡</span>Emisor</button>
     <button class="tool-btn" id="btn-receptor" onclick="setMode('receptor')"><span class="icon">🎯</span>Receptor</button>
     <button class="tool-btn" id="btn-delete" onclick="setMode('delete')"><span class="icon">🗑️</span>Borrar</button>
@@ -438,8 +489,8 @@ L<sub>total</sub> = 10·log₁₀( Σ 10^(Lᵢ/10) )        [suma energética de
       <div id="receptor-container"><div class="empty-hint"><div class="big">🎯</div>Selecciona <b>Receptor</b> y haz clic en el mapa</div></div>
     </div>
   </div><!-- /scroll-area -->
-  <div style="padding:10px 16px;border-top:1px solid var(--border);font-size:9px;line-height:1.6;color:var(--muted);font-family:var(--font)">
-    <span style="display:block;font-weight:700;color:var(--text)">Proyecto desarrollado por Jose Francisco Sánchez Díaz</span>
+  <div id="sidebar-footer">
+    <span>Proyecto desarrollado por Jose Francisco Sánchez Díaz</span>
     Biólogo · Servicio de Evaluaciones Ambientales<br>Principado de Asturias
   </div>
 </div><!-- /sidebar -->
@@ -498,6 +549,7 @@ var osmDlMode=false, osmDrawActive=false;
 var osmDraw={startX:0,startY:0,startLL:null};
 var osmAborted=false;
 var pnoaLayer=null, isoLayer=null;
+var panelsCollapsed=false;
 var mds=null; // reservado para uso futuro
 var dem=null; // MDT05 {data,width,height,west,east,south,north}
 var demFetchTimer=null;
@@ -556,6 +608,24 @@ L.control.zoom({position:'topright'}).addTo(map);
 new MapControls().addTo(map);
 
 // ===================== TOGGLE FUNCTIONS =====================
+function syncMapLayout(){
+  setTimeout(function(){map.invalidateSize();},260);
+}
+function togglePanels(forceState){
+  panelsCollapsed=typeof forceState==='boolean'?forceState:!panelsCollapsed;
+  document.getElementById('app').classList.toggle('panels-collapsed',panelsCollapsed);
+  var btn=document.getElementById('btn-panels');
+  if(btn){
+    btn.classList.toggle('active',panelsCollapsed);
+    btn.title=panelsCollapsed?'Expandir paneles':'Contraer paneles';
+    var label=btn.querySelector('.tool-label');
+    if(label)label.textContent=panelsCollapsed?'Expandir':'Contraer';
+    var icon=btn.querySelector('.icon');
+    if(icon)icon.textContent=panelsCollapsed?'⇤':'⇔';
+  }
+  syncMapLayout();
+}
+window.addEventListener('resize',syncMapLayout);
 function togglePNOA(){
   pnoaVisible=!pnoaVisible;
   pnoaVisible?map.addLayer(pnoaLayer):map.removeLayer(pnoaLayer);
@@ -1997,6 +2067,7 @@ function downloadBytes(bytes,filename){
   setTimeout(function(){URL.revokeObjectURL(url);},2000);
 }
 
+togglePanels(false);
 renderSidebar();
 
 </script>
