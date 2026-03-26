@@ -2143,6 +2143,12 @@ function downloadBytes(bytes,filename){
 }
 
 // ── GPKG builder — Isofonas ───────────────────────────────────────────────────
+// Algoritmo: para cada banda se construye una máscara booleana de celdas,
+// se extraen componentes conexas (BFS 4-vecinos) y para cada componente se
+// traza el perímetro exterior recorriendo los bordes expuestos de las celdas.
+// El trazado sigue el contorno en sentido horario usando una tabla de adyacencia
+// nodo → segmento para encadenar el anillo sin ambigüedad.
+
 function downloadIsoGPKG(){
   if(!isoVisible||emitters.length===0){
     alert('Activa primero el mapa de isofonas (botón ~) y añade al menos un emisor.');
@@ -2153,115 +2159,174 @@ function downloadIsoGPKG(){
   var btn=document.getElementById('isodl-btn');
   btn.classList.add('loading');
 
-  // Construir el grid igual que IsoLayer._draw pero en coordenadas geográficas
-  var m=map;
-  var sz=m.getSize();
+  setTimeout(function(){
+  try{
+
+  // ── 1. Grid de niveles en vértices ─────────────────────────────────────────
+  var m=map, sz=m.getSize();
   var step=demVisible?8:(buildingsLoaded?6:4);
-  var cols=Math.ceil(sz.x/step)+1;
-  var rows=Math.ceil(sz.y/step)+1;
-  var grid=new Float32Array(cols*rows);
-  // Guardar también las coordenadas [lon,lat] de cada celda para reproyectar
-  var pts=[];
+  var cols=Math.ceil(sz.x/step)+2;  // +2 para borde de guarda
+  var rows=Math.ceil(sz.y/step)+2;
+  var gLon=new Float64Array(cols*rows);
+  var gLat=new Float64Array(cols*rows);
+  var gVal=new Float32Array(cols*rows);
+
   for(var r=0;r<rows;r++){
     for(var c=0;c<cols;c++){
-      var ll=m.containerPointToLatLng(L.point(c*step,r*step));
+      var ll=m.containerPointToLatLng(L.point((c-0.5)*step,(r-0.5)*step));
+      gLon[r*cols+c]=ll.lng; gLat[r*cols+c]=ll.lat;
       var sp=0;
-      for(var i=0;i<emitters.length;i++){
-        var lv=levelFrom(emitters[i],ll.lat,ll.lng);
-        sp+=Math.pow(10,lv/10);
-      }
-      grid[r*cols+c]=10*Math.log10(sp);
-      pts.push([ll.lng,ll.lat]); // [lon,lat]
+      for(var i=0;i<emitters.length;i++) sp+=Math.pow(10,levelFrom(emitters[i],ll.lat,ll.lng)/10);
+      gVal[r*cols+c]=10*Math.log10(sp);
     }
   }
 
-  // Marching Squares — extraer segmentos por umbral y construir polígonos
-  var lut=[
-    [],[['L','B']],[['B','R']],[['L','R']],[['T','R']],
-    [['T','R'],['L','B']],[['T','B']],[['T','L']],[['T','L']],
-    [['T','B']],[['T','L'],['B','R']],[['T','R']],[['L','R']],
-    [['B','R']],[['L','B']],[]
-  ];
+  // ── 2. Grid de CELDAS (rows-1) × (cols-1), valor = media de 4 vértices ─────
+  var CR=rows-1, CC=cols-1;
+  var cval=new Float32Array(CR*CC);
+  for(var cr=0;cr<CR;cr++)
+    for(var cc=0;cc<CC;cc++)
+      cval[cr*CC+cc]=(gVal[cr*cols+cc]+gVal[cr*cols+cc+1]+gVal[(cr+1)*cols+cc]+gVal[(cr+1)*cols+cc+1])*0.25;
 
-  // Función para interpolar coordenada geográfica entre dos celdas
-  function interpLL(r1,c1,r2,c2,th){
-    var v1=grid[r1*cols+c1], v2=grid[r2*cols+c2];
-    var t=(v2===v1)?0.5:(th-v1)/(v2-v1);
-    var lon1=pts[r1*cols+c1][0], lat1=pts[r1*cols+c1][1];
-    var lon2=pts[r2*cols+c2][0], lat2=pts[r2*cols+c2][1];
-    return[lon1+t*(lon2-lon1), lat1+t*(lat2-lat1)];
-  }
+  // Acceso a lon/lat del vértice (vr,vc) — vértices van de 0..rows × 0..cols
+  function vLon(vr,vc){return gLon[vr*cols+vc];}
+  function vLat(vr,vc){return gLat[vr*cols+vc];}
 
-  // Para cada umbral recopila segmentos {p1,p2}
-  var thresholds=[45,55,65,70,75];
+  // ── 3. Para cada banda: BFS → componentes → perímetro → ring ───────────────
   var bandDefs=[
-    {min:-9999,max:45, label:'< 45 dB(A)'},
-    {min:45,   max:55, label:'45 – 55 dB(A)'},
-    {min:55,   max:65, label:'55 – 65 dB(A)'},
-    {min:65,   max:70, label:'65 – 70 dB(A)'},
-    {min:70,   max:75, label:'70 – 75 dB(A)'},
-    {min:75,   max:9999,label:'> 75 dB(A)'}
+    {min:75,   max:1e9, label:'> 75 dB(A)',    nmin:75,  nmax:null},
+    {min:70,   max:75,  label:'70 – 75 dB(A)', nmin:70,  nmax:75},
+    {min:65,   max:70,  label:'65 – 70 dB(A)', nmin:65,  nmax:70},
+    {min:55,   max:65,  label:'55 – 65 dB(A)', nmin:55,  nmax:65},
+    {min:45,   max:55,  label:'45 – 55 dB(A)', nmin:45,  nmax:55},
+    {min:-1e9, max:45,  label:'< 45 dB(A)',    nmin:null,nmax:45}
   ];
 
-  // Extraer polígonos rellenos para cada banda usando una máscara booleana
-  // Cada celda del grid (paso=step px) → rectángulo en coordenadas geo
   var features=[];
+
   bandDefs.forEach(function(band){
-    for(var r=0;r<rows-1;r++){
-      for(var c=0;c<cols-1;c++){
-        // Centro de la celda
-        var val=grid[r*cols+c];
-        if(val<band.min||val>=band.max)return; // skip celdas fuera de banda
-        // Esquinas del rectángulo de celda en lon/lat
-        var ll1=pts[r*cols+c];           // TL [lon,lat]
-        var ll2=pts[r*cols+c+1];         // TR
-        var ll3=pts[(r+1)*cols+c+1];     // BR
-        var ll4=pts[(r+1)*cols+c];       // BL
-        // Anillo cerrado
-        var ring=[ll1,ll2,ll3,ll4,ll1];
-        features.push({ring:ring, nivel_min:band.min===-9999?null:band.min, nivel_max:band.max===9999?null:band.max, descripcion:band.label});
+    var mask=new Uint8Array(CR*CC);
+    var any=false;
+    for(var i=0;i<CR*CC;i++){if(cval[i]>=band.min&&cval[i]<band.max){mask[i]=1;any=true;}}
+    if(!any)return;
+
+    // BFS para componentes conexas
+    var vis=new Uint8Array(CR*CC);
+    var ddR=[0,0,1,-1], ddC=[1,-1,0,0];
+    for(var s0=0;s0<CR*CC;s0++){
+      if(!mask[s0]||vis[s0])continue;
+      // BFS
+      var comp=[]; var q=[s0]; vis[s0]=1;
+      while(q.length){
+        var cur=q.shift(); comp.push(cur);
+        var cr0=Math.floor(cur/CC), cc0=cur%CC;
+        for(var d=0;d<4;d++){
+          var nr=cr0+ddR[d], nc=cc0+ddC[d];
+          if(nr<0||nr>=CR||nc<0||nc>=CC)continue;
+          var ni=nr*CC+nc;
+          if(!mask[ni]||vis[ni])continue;
+          vis[ni]=1; q.push(ni);
+        }
       }
+
+      // Construir conjunto de celdas para lookup rápido
+      var inC=new Uint8Array(CR*CC);
+      comp.forEach(function(idx){inC[idx]=1;});
+      function has(r2,c2){return r2>=0&&r2<CR&&c2>=0&&c2<CC&&inC[r2*CC+c2];}
+
+      // Recopilar segmentos de perímetro dirigidos (en sentido horario exterior).
+      // Convención de vértices: celda (cr,cc) tiene esquinas:
+      //   TL=(cr,cc)  TR=(cr,cc+1)  BR=(cr+1,cc+1)  BL=(cr+1,cc)
+      // Borde expuesto → segmento dirigido que deja la celda a su IZQUIERDA:
+      //   Top (vecino cr-1,cc ausente):    TL→TR
+      //   Right (vecino cr,cc+1 ausente):  TR→BR
+      //   Bottom (vecino cr+1,cc ausente): BR→BL
+      //   Left (vecino cr,cc-1 ausente):   BL→TL
+      //
+      // Para evitar colisiones en esquinas (mismo nodo de inicio para dos segmentos),
+      // codificamos cada half-edge como "fromNode:toNode" en una tabla fromNode→[toNode,…]
+      // y seguimos siempre el ÚNICO sucesor válido del nodo actual.
+
+      var edgesFrom={}; // fromNode → toNode  (cada nodo de perímetro tiene exactamente 1 sucesor)
+      comp.forEach(function(idx){
+        var cr=Math.floor(idx/CC), cc=idx%CC;
+        var TL=cr*cols+cc, TR=cr*cols+cc+1, BR=(cr+1)*cols+cc+1, BL=(cr+1)*cols+cc;
+        // Sólo añadir si el borde está expuesto
+        if(!has(cr-1,cc)){ if(edgesFrom[TL]===undefined) edgesFrom[TL]=TR; }
+        if(!has(cr,cc+1)){ if(edgesFrom[TR]===undefined) edgesFrom[TR]=BR; }
+        if(!has(cr+1,cc)){ if(edgesFrom[BR]===undefined) edgesFrom[BR]=BL; }
+        if(!has(cr,cc-1)){ if(edgesFrom[BL]===undefined) edgesFrom[BL]=TL; }
+      });
+      // Segunda pasada: rellenar entradas que colisionaron en la primera (esquinas convexas)
+      // En una esquina convexa el mismo vértice es start de dos segmentos perpendiculares;
+      // el orden correcto es priorizar la dirección que continúa el contorno en sentido horario.
+      // La convención de prioridad: Top > Right > Bottom > Left (orden horario desde TL).
+      comp.forEach(function(idx){
+        var cr=Math.floor(idx/CC), cc=idx%CC;
+        var TL=cr*cols+cc, TR=cr*cols+cc+1, BR=(cr+1)*cols+cc+1, BL=(cr+1)*cols+cc;
+        // Sobrescribir con prioridad horaria si ya había un valor diferente (colisión)
+        // El orden que garantiza sentido horario en cada vértice es:
+        //   Si TL es expuesto por Top Y por Left de otra celda, priorizar Top (TL→TR)
+        if(!has(cr-1,cc)) edgesFrom[TL]=TR;        // Top  — mayor prioridad
+        if(!has(cr,cc+1)) edgesFrom[TR]=BR;         // Right
+        if(!has(cr+1,cc)) edgesFrom[BR]=BL;         // Bottom
+        if(!has(cr,cc-1)) edgesFrom[BL]=TL;         // Left  — menor prioridad
+      });
+
+      // Encadenar en anillos cerrados
+      var usedNode={};
+      Object.keys(edgesFrom).forEach(function(startStr){
+        var start=parseInt(startStr);
+        if(usedNode[start])return;
+        var ring=[];
+        var cur=start, safety=0;
+        while(!usedNode[cur]&&edgesFrom[cur]!==undefined&&safety++<50000){
+          usedNode[cur]=true;
+          var vr=Math.floor(cur/cols), vc=cur%cols;
+          ring.push([vLon(vr,vc), vLat(vr,vc)]);
+          cur=edgesFrom[cur];
+        }
+        if(ring.length>=3){
+          ring.push(ring[0]); // cerrar
+          features.push({ring:ring, nmin:band.nmin, nmax:band.nmax, label:band.label});
+        }
+      });
     }
   });
 
   if(!features.length){
     btn.classList.remove('loading');
-    alert('No hay datos de isofonas en la vista actual. Añade emisores y activa el mapa de isofonas.');
+    alert('No hay datos de isofonas en la vista actual.');
     return;
   }
 
-  try{
-    var db=new SQL.Database();
-    // SRS
-    db.run('CREATE TABLE gpkg_spatial_ref_sys(srs_name TEXT NOT NULL,srs_id INTEGER NOT NULL PRIMARY KEY,organization TEXT NOT NULL,organization_coordsys_id INTEGER NOT NULL,definition TEXT NOT NULL,description TEXT)');
-    db.run("INSERT INTO gpkg_spatial_ref_sys VALUES('WGS 84 geographic 2D',4326,'EPSG',4326,'GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563,AUTHORITY[\"EPSG\",\"7030\"]],AUTHORITY[\"EPSG\",\"6326\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4326\"]]','WGS 84')");
-    db.run("INSERT INTO gpkg_spatial_ref_sys VALUES('Undefined Cartesian SRS',-1,'NONE',-1,'undefined','')");
-    db.run("INSERT INTO gpkg_spatial_ref_sys VALUES('Undefined Geographic SRS',0,'NONE',0,'undefined','')");
-    // Contents
-    db.run('CREATE TABLE gpkg_contents(table_name TEXT NOT NULL PRIMARY KEY,data_type TEXT NOT NULL,identifier TEXT,description TEXT DEFAULT \'\',last_change DATETIME NOT NULL DEFAULT (strftime(\'%Y-%m-%dT%H:%M:%S.000Z\',\'now\')),min_x DOUBLE,min_y DOUBLE,max_x DOUBLE,max_y DOUBLE,srs_id INTEGER)');
-    var minX=180,minY=90,maxX=-180,maxY=-90;
-    features.forEach(function(f){f.ring.forEach(function(pt){if(pt[0]<minX)minX=pt[0];if(pt[0]>maxX)maxX=pt[0];if(pt[1]<minY)minY=pt[1];if(pt[1]>maxY)maxY=pt[1];});});
-    db.run("INSERT INTO gpkg_contents VALUES('isofonas','features','isofonas','Isofonas de ruido ambiental — AcuMap',strftime('%Y-%m-%dT%H:%M:%S.000Z','now'),?,?,?,?,4326)",[minX,minY,maxX,maxY]);
-    // Geometry columns
-    db.run('CREATE TABLE gpkg_geometry_columns(table_name TEXT NOT NULL,column_name TEXT NOT NULL,geometry_type_name TEXT NOT NULL,srs_id INTEGER NOT NULL,z TINYINT NOT NULL,m TINYINT NOT NULL,CONSTRAINT pk_geom_cols PRIMARY KEY(table_name,column_name))');
-    db.run("INSERT INTO gpkg_geometry_columns VALUES('isofonas','geom','POLYGON',4326,0,0)");
-    // Feature table
-    db.run('CREATE TABLE isofonas(fid INTEGER PRIMARY KEY AUTOINCREMENT,geom BLOB,nivel_min REAL,nivel_max REAL,descripcion TEXT)');
-    var stmt=db.prepare('INSERT INTO isofonas(geom,nivel_min,nivel_max,descripcion)VALUES(?,?,?,?)');
-    features.forEach(function(f){
-      stmt.run([makeGPKGGeomBlob(f.ring),f.nivel_min,f.nivel_max,f.descripcion]);
-    });
-    stmt.free();
-    var bytes=db.export();
-    db.close();
-    var ts=new Date().toISOString().replace(/[:.]/g,'-').slice(0,19);
-    downloadBytes(bytes,'isofonas_acumap_'+ts+'.gpkg');
-    btn.classList.remove('loading');
+  // ── 4. Construir GeoPackage ─────────────────────────────────────────────────
+  var db=new SQL.Database();
+  db.run('CREATE TABLE gpkg_spatial_ref_sys(srs_name TEXT NOT NULL,srs_id INTEGER NOT NULL PRIMARY KEY,organization TEXT NOT NULL,organization_coordsys_id INTEGER NOT NULL,definition TEXT NOT NULL,description TEXT)');
+  db.run("INSERT INTO gpkg_spatial_ref_sys VALUES('WGS 84 geographic 2D',4326,'EPSG',4326,'GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563,AUTHORITY[\"EPSG\",\"7030\"]],AUTHORITY[\"EPSG\",\"6326\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4326\"]]','WGS 84')");
+  db.run("INSERT INTO gpkg_spatial_ref_sys VALUES('Undefined Cartesian SRS',-1,'NONE',-1,'undefined','')");
+  db.run("INSERT INTO gpkg_spatial_ref_sys VALUES('Undefined Geographic SRS',0,'NONE',0,'undefined','')");
+  db.run('CREATE TABLE gpkg_contents(table_name TEXT NOT NULL PRIMARY KEY,data_type TEXT NOT NULL,identifier TEXT,description TEXT DEFAULT \'\',last_change DATETIME NOT NULL DEFAULT (strftime(\'%Y-%m-%dT%H:%M:%S.000Z\',\'now\')),min_x DOUBLE,min_y DOUBLE,max_x DOUBLE,max_y DOUBLE,srs_id INTEGER)');
+  var minX=180,minY=90,maxX=-180,maxY=-90;
+  features.forEach(function(f){f.ring.forEach(function(pt){if(pt[0]<minX)minX=pt[0];if(pt[0]>maxX)maxX=pt[0];if(pt[1]<minY)minY=pt[1];if(pt[1]>maxY)maxY=pt[1];});});
+  db.run("INSERT INTO gpkg_contents VALUES('isofonas','features','isofonas','Isofonas de ruido ambiental — AcuMap',strftime('%Y-%m-%dT%H:%M:%S.000Z','now'),?,?,?,?,4326)",[minX,minY,maxX,maxY]);
+  db.run('CREATE TABLE gpkg_geometry_columns(table_name TEXT NOT NULL,column_name TEXT NOT NULL,geometry_type_name TEXT NOT NULL,srs_id INTEGER NOT NULL,z TINYINT NOT NULL,m TINYINT NOT NULL,CONSTRAINT pk_geom_cols PRIMARY KEY(table_name,column_name))');
+  db.run("INSERT INTO gpkg_geometry_columns VALUES('isofonas','geom','POLYGON',4326,0,0)");
+  db.run('CREATE TABLE isofonas(fid INTEGER PRIMARY KEY AUTOINCREMENT,geom BLOB,nivel_min REAL,nivel_max REAL,descripcion TEXT)');
+  var stmt=db.prepare('INSERT INTO isofonas(geom,nivel_min,nivel_max,descripcion)VALUES(?,?,?,?)');
+  features.forEach(function(f){stmt.run([makeGPKGGeomBlob(f.ring),f.nmin,f.nmax,f.label]);});
+  stmt.free();
+  var bytes=db.export(); db.close();
+  var ts=new Date().toISOString().replace(/[:.]/g,'-').slice(0,19);
+  downloadBytes(bytes,'isofonas_acumap_'+ts+'.gpkg');
+  btn.classList.remove('loading');
+
   }catch(err){
     btn.classList.remove('loading');
     alert('Error al generar el GPKG de isofonas:\n'+err.message);
     console.error(err);
   }
+  },50);
 }
 
 togglePanels(false);
